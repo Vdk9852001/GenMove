@@ -1,0 +1,25 @@
+:root{
+  --brand-950:#1e1b4b;--brand-900:#312e81;--brand-800:#3730a3;
+  --brand-700:#4338ca;--brand-600:#4f46e5;--brand-500:#6366f1;
+  --brand-100:#e0e7ff;--brand-50:#eef2ff;
+  --app-bg:#f5f7fb;--app-surface:#fff;--app-surface-soft:#f8f9fc;
+  --app-border:#e2e6ef;--app-text:#182033;--app-muted:#667085;
+  --accent:#4f46e5;--accent2:#6366f1;--accent-bg:#eef2ff;
+  --teal:#4f46e5;--teal-dark:#3730a3;--teal-bg:#eef2ff;
+  --bg:#f5f7fb;--surface:#fff;--surface2:#f1f3f8;--border:#e2e6ef;
+  --text:#182033;--muted:#667085;--deep:#1e1b4b;--indigo:#4f46e5;
+  --shadow:0 1px 3px rgba(30,27,75,.07);--shadow-md:0 12px 32px rgba(30,27,75,.12)
+}
+html{color-scheme:light}body{background:var(--app-bg);color:var(--app-text);font-family:Inter,"Segoe UI",ui-sans-serif,system-ui,-apple-system,sans-serif}
+button,a,input,select,textarea{transition:border-color .16s ease,box-shadow .16s ease,background-color .16s ease,transform .16s ease}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid rgba(79,70,229,.2);outline-offset:2px}
+button:hover:not(:disabled),.btn:hover:not(:disabled){transform:translateY(-1px)}
+body:not(.auth-page) header{border-bottom-color:var(--app-border)}
+.hero{background:linear-gradient(120deg,var(--brand-950),var(--brand-700) 58%,var(--brand-500))!important}
+.logo-mark,.logo-icon,.mark{background:linear-gradient(135deg,var(--brand-700),var(--brand-500))!important}
+.btn.green,.btn.amber,.btn.red{background:var(--brand-600)!important;color:#fff!important}
+.notice{background:var(--brand-50)!important;color:var(--brand-800)!important;border-color:var(--brand-100)!important}
+.result{background:var(--brand-50)!important;color:var(--brand-800)!important}
+.metric.green:before,.metric.red:before,.metric.amber:before,.metric.teal:before{background:var(--brand-600)!important}
+.auth-card,.card,.panel,.metric,.tablewrap{box-shadow:var(--shadow)}
+.file-action{height:32px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--app-border);border-radius:7px;background:var(--brand-50);color:var(--brand-700);font-weight:700;text-decoration:none}

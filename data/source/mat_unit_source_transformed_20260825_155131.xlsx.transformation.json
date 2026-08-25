@@ -1,0 +1,33 @@
+{
+  "object_name": "MATERIAL",
+  "source_file": "mat_unit_source.xlsx",
+  "transformed_file": "mat_unit_source_transformed_20260825_155131.xlsx",
+  "rulebook": "GenMove_transformation_rulebook_example.xlsx",
+  "created_at": "2026-08-25T15:51:31",
+  "changed_rows": 2,
+  "changed_cells": 2,
+  "audit": [
+    {
+      "status": "APPLIED",
+      "affected_rows": 2,
+      "object": "MATERIAL",
+      "source_field": "WERKS",
+      "target_field": "WERKS",
+      "source_value": "5302",
+      "target_value": "USP1",
+      "description": "",
+      "rule_row": 2
+    },
+    {
+      "status": "NO_MATCH",
+      "affected_rows": 0,
+      "object": "MATERIAL",
+      "source_field": "WERKS",
+      "target_field": "WERKS",
+      "source_value": "5302",
+      "target_value": "USP1",
+      "description": "",
+      "rule_row": 1
+    }
+  ]
+}

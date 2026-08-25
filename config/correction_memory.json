@@ -1,0 +1,210 @@
+[
+  {
+    "object": "MATERIALS",
+    "source_field": "BRGEW",
+    "target_field": "BRGEW",
+    "issues": [
+      "Numeric delta (tolerance \u00b10.001)"
+    ],
+    "examples": [
+      {
+        "material": "10000006",
+        "source_value": 6.4,
+        "target_value": 9.8,
+        "issue": "Numeric delta (tolerance \u00b10.001)"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:31:59"
+  },
+  {
+    "object": "MATERIALS",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "20000001",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      },
+      {
+        "material": "20000002",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      },
+      {
+        "material": "20000003",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 2,
+    "last_approved_at": "2026-08-25T16:25:15"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "WERKS",
+    "target_field": "WERKS",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "10000003",
+        "source_value": "CNG1",
+        "target_value": "USG1",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:35:04"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MAKTX",
+    "target_field": "MAKTX",
+    "issues": [
+      "Missing in target",
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "10000004",
+        "source_value": "Hydraulic Seal Kit",
+        "target_value": "(blank)",
+        "issue": "Missing in target"
+      },
+      {
+        "material": "10000002",
+        "source_value": "Control Valve 20MM",
+        "target_value": "Control Valve 25MM",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:35:10"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MTART",
+    "target_field": "MTART",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "10000008",
+        "source_value": "HALB",
+        "target_value": "FERT",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:35:13"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MEINS",
+    "target_field": "MEINS",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "10000012",
+        "source_value": "L",
+        "target_value": "EA",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:35:15"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "BRGEW",
+    "target_field": "BRGEW",
+    "issues": [
+      "Numeric delta (tolerance \u00b10.001)"
+    ],
+    "examples": [
+      {
+        "material": "10000006",
+        "source_value": 6.4,
+        "target_value": 9.8,
+        "issue": "Numeric delta (tolerance \u00b10.001)"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:35:17"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "10000007",
+        "source_value": "ACTIVE",
+        "target_value": "INACTIVE",
+        "issue": "Value mismatch"
+      },
+      {
+        "material": "10000010",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T16:42:07"
+  },
+  {
+    "object": "TEST",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "issues": [
+      "Value mismatch"
+    ],
+    "examples": [
+      {
+        "material": "20000001",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      },
+      {
+        "material": "20000002",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      },
+      {
+        "material": "20000003",
+        "source_value": "ACTIVE",
+        "target_value": "BLOCKED",
+        "issue": "Value mismatch"
+      }
+    ],
+    "action": "copy_source_to_target",
+    "approved_count": 1,
+    "last_approved_at": "2026-08-14T17:42:35"
+  }
+]

@@ -1,0 +1,13 @@
+:root{--navy:#12304a;--teal:#0f766e;--line:#d9e2ec;--muted:#64748b;--bg:#f3f6f9}
+    *{box-sizing:border-box}body{margin:0;font:13px system-ui,-apple-system,sans-serif;background:var(--bg);color:#172033}
+    header{height:62px;background:linear-gradient(100deg,var(--navy),#174e68);color:white;display:flex;align-items:center;padding:0 22px;gap:16px}
+    header h1{font-size:18px;margin:0}header span{opacity:.72}.back{margin-left:auto;color:white;text-decoration:none;border:1px solid #ffffff66;padding:7px 12px;border-radius:6px}
+    main{padding:20px}.toolbar{background:white;border:1px solid var(--line);border-radius:10px;padding:13px;display:flex;gap:10px;align-items:center;box-shadow:0 2px 8px #17324d12}
+    select,input,button,a.btn{height:34px;border:1px solid var(--line);border-radius:6px;padding:0 10px;background:white;color:#172033}
+    button,a.btn{cursor:pointer;font-weight:650;text-decoration:none;display:inline-flex;align-items:center}.primary{background:var(--teal)!important;color:white!important;border-color:var(--teal)!important}
+    #summary{margin-left:auto;color:var(--muted)}.sheet{margin-top:14px;background:white;border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:calc(100vh - 190px)}
+    table{border-collapse:separate;border-spacing:0;min-width:100%;font-size:12px}th{position:sticky;top:0;z-index:2;background:#e8eef4;color:#26384b;font-weight:700;text-align:left;border-bottom:1px solid #bac8d5}
+    th,td{padding:7px 9px;border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;white-space:nowrap;max-width:420px;overflow:hidden;text-overflow:ellipsis}
+    th:first-child,td:first-child{position:sticky;left:0;background:inherit}tbody tr:nth-child(even){background:#f8fafc}tbody tr:hover{background:#e7f7f5}
+    .footer{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px}.footer button:disabled{opacity:.4;cursor:not-allowed}
+    .error{margin-top:14px;padding:12px;background:#fee2e2;color:#991b1b;border-radius:8px;display:none}.loading{padding:50px;text-align:center;color:var(--muted)}

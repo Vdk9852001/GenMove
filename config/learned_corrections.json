@@ -1,0 +1,65 @@
+[
+  {
+    "object": "MATERIALS",
+    "source_field": "BRGEW",
+    "target_field": "BRGEW",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:10:25"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "WERKS",
+    "target_field": "WERKS",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:35:04"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MAKTX",
+    "target_field": "MAKTX",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:35:10"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MTART",
+    "target_field": "MTART",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:35:13"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "MEINS",
+    "target_field": "MEINS",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:35:15"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "BRGEW",
+    "target_field": "BRGEW",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:35:17"
+  },
+  {
+    "object": "MATERIALS2",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T16:42:07"
+  },
+  {
+    "object": "TEST",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-14T17:42:35"
+  },
+  {
+    "object": "MATERIALS",
+    "source_field": "STATUS",
+    "target_field": "STATUS",
+    "action": "copy_source_to_target",
+    "approved_at": "2026-08-25T16:25:15"
+  }
+]

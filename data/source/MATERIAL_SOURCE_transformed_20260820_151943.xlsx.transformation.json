@@ -1,0 +1,33 @@
+{
+  "object_name": "TEST3",
+  "source_file": "MATERIAL_SOURCE.xlsx",
+  "transformed_file": "MATERIAL_SOURCE_transformed_20260820_151943.xlsx",
+  "rulebook": "GenMove_transformation_rulebook_example.xlsx",
+  "created_at": "2026-08-20T15:19:43",
+  "changed_rows": 0,
+  "changed_cells": 0,
+  "audit": [
+    {
+      "status": "NO_MATCH",
+      "affected_rows": 0,
+      "object": "*",
+      "source_field": "MEINS",
+      "target_field": "MEINS",
+      "source_value": "PC",
+      "target_value": "PCE",
+      "description": "Legacy unit of measure to S/4 UOM",
+      "rule_row": 5
+    },
+    {
+      "status": "NO_MATCH",
+      "affected_rows": 0,
+      "object": "*",
+      "source_field": "MEINS",
+      "target_field": "MEINS",
+      "source_value": "TB",
+      "target_value": "TUB",
+      "description": "Legacy unit of measure to S/4 UOM",
+      "rule_row": 6
+    }
+  ]
+}
