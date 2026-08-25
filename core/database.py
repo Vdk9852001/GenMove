@@ -1,12 +1,17 @@
-"""Optional persistent database layer for GenMove.
+"""Persistent database layer for GenMove.
 
-Set DATABASE_URL to enable it, for example:
+Set DATABASE_URL to use an external database, for example:
 mysql+pymysql://genmove:change-me@127.0.0.1:3306/genmove
+
+When no external database is configured, GenMove automatically uses the
+embedded ``config/genmove_local.db`` SQLite database.  This keeps login,
+governance, and validation history available without MySQL or Docker.
 """
 from __future__ import annotations
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 
 class DatabaseStore:
@@ -36,7 +41,13 @@ class DatabaseStore:
             port = os.environ.get("MYSQL_PORT", "3306")
             database = os.environ.get("MYSQL_DATABASE", "genmove")
             url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-        return cls(url)
+        local_db = Path(__file__).resolve().parent.parent / "config" / "genmove_local.db"
+        local_db.parent.mkdir(parents=True, exist_ok=True)
+        local_url = f"sqlite:///{local_db}"
+        if not url:
+            return cls(local_url)
+        store = cls(url)
+        return store if store.enabled else cls(local_url)
 
     @property
     def enabled(self):

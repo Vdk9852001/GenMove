@@ -1314,7 +1314,9 @@ def index():
 
 @app.route("/home")
 def home():
-    return render_template("home.html")
+    backend = database_store.status().get("backend", "database")
+    database_label = "Native MySQL connected" if backend.startswith("mysql") else "Local database ready"
+    return render_template("home.html", database_label=database_label)
 
 
 @app.route("/api/home/summary")
@@ -1358,7 +1360,7 @@ def api_rule_hub_save_rule():
     if missing: return jsonify({"error": "Required: " + ", ".join(missing)}), 400
     payload["status"] = "DRAFT"
     rule_id = database_store.save_transform_rule(payload, session.get("user_email", ""))
-    if not rule_id: return jsonify({"error": "MySQL is required for governed rules."}), 503
+    if not rule_id: return jsonify({"error": "A persistent database is required for governed rules."}), 503
     database_store.log_event(f"Transformation rule {rule_id} saved as DRAFT by {session.get('user_email')}")
     return jsonify({"ok": True, "id": rule_id})
 
@@ -3414,7 +3416,8 @@ if __name__ == "__main__":
     print(f"  Reports        → {REPORTS_DIR}")
     print(f"  Pass threshold → {cfg.get('pass_threshold', 100)}%")
     db_status = database_store.status()
-    print(f"  Database       → {'MySQL connected' if db_status['enabled'] else 'memory fallback'}")
+    backend_label = "MySQL connected" if db_status.get("backend", "").startswith("mysql") else "local SQLite"
+    print(f"  Database       → {backend_label if db_status['enabled'] else 'unavailable'}")
     if cfg.get("active_template"):
         print(f"  Active template→ {cfg['active_template']}")
     port = int(os.environ.get("SAP_VALIDATOR_PORT", "5050"))
