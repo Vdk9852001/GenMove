@@ -368,6 +368,23 @@ th{background:#f7f9fd}.sec{color:#66718d;margin-top:24px}.modal{border:0;border-
 @media(max-width:1120px){body{padding:0}.logo{left:14px;top:14px}.layout{height:calc(100vh - 70px);border-radius:0}.layout{grid-template-columns:220px 1fr}header{margin-left:220px;border-radius:0}.hdr-r{overflow-x:auto}.last-scan,.thr-badge{display:none}}
 @media(max-width:760px){header{margin-left:0;padding-left:62px}.logo{position:fixed;top:13px;left:12px;width:auto}.logo>div:last-child{display:none}.layout{grid-template-columns:1fr}.layout>aside{display:none}main{padding:18px}.upload-zone{grid-template-columns:1fr}.hdr-r .hbtn-ghost{display:none}}
 
+/* Claude palette overrides — colors only */
+body{background:var(--beige)}
+header::before,aside{background:var(--pine)}
+.logo-icon{background:var(--teal)!important;box-shadow:0 10px 24px rgba(15,92,83,.25)}
+.logo-text span{color:#f3a35f}.logo-sub{color:#9eb3ae}
+.layout,main{background:var(--beige)}
+.sb-head{color:#80948f}.sb-item{color:#c3d4d0}.sb-item:hover{background:#1a2b28}
+.sb-item.active{background:var(--teal);border-left-color:#f3a35f;color:#fff}
+.sb-icon-tbl{background:#22332f;color:#c3d4d0}.sb-item.active .sb-icon-tbl{background:#ffffff1c;color:#fff}
+.sb-item .tsub{color:#81948f}.sb-item.active .tsub{color:#cde0db}.sb-unmatched{color:#f3a35f}
+.sb-footer{background:#09100f;border-color:#2b3c38}.ub{background:#172522;border-color:#2b3c38;color:#d8e4e1}.ub:hover{background:var(--teal);color:#fff}
+.hbtn-accent,.ubtn,.save-btn{background:var(--teal)}.thr-badge{background:var(--sage);color:var(--teal)}
+.upload-box{background:#faf8f3;border-color:#e7e0d5}.upload-box:hover{border-color:#6da198}
+#welcome h2 span{color:var(--teal)}
+.hbtn[onclick*="rule-hub"]{background:var(--sage)!important;color:var(--teal)!important;border-color:#cfe5df!important}
+#welcome>.save-btn{border-color:#cfe5df!important}
+
 .s-section{margin-bottom:20px}
 .s-section h4{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
   letter-spacing:.06em;margin-bottom:10px}

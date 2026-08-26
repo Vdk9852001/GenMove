@@ -11,3 +11,4 @@
     th:first-child,td:first-child{position:sticky;left:0;background:inherit}tbody tr:nth-child(even){background:#f8fafc}tbody tr:hover{background:#e7f7f5}
     .footer{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px}.footer button:disabled{opacity:.4;cursor:not-allowed}
     .error{margin-top:14px;padding:12px;background:#fee2e2;color:#991b1b;border-radius:8px;display:none}.loading{padding:50px;text-align:center;color:var(--muted)}
+    header{background:var(--pine)}.back{border-color:#40514d}.primary{background:var(--teal)!important;border-color:var(--teal)!important}tbody tr:hover{background:var(--sage)}

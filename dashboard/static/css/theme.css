@@ -23,3 +23,29 @@ body:not(.auth-page) header{border-bottom-color:var(--app-border)}
 .metric.green:before,.metric.red:before,.metric.amber:before,.metric.teal:before{background:var(--brand-600)!important}
 .auth-card,.card,.panel,.metric,.tablewrap{box-shadow:var(--shadow)}
 .file-action{height:32px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--app-border);border-radius:7px;background:var(--brand-50);color:var(--brand-700);font-weight:700;text-decoration:none}
+
+/* Claude Design palette only — layout and component geometry stay unchanged */
+:root{
+  --pine:#0d1615;--pine-soft:#14201e;--teal:#0f5c53;--teal-dark:#0a4740;
+  --orange:#c05621;--orange-bg:#fdf0e2;--beige:#f6f2e9;
+  --brick:#9e3226;--brick-bg:#fbecea;--sage:#e5f2ee;
+  --accent:#0f5c53;--accent2:#14756a;--accent-bg:#e5f2ee;--accent-light:#e5f2ee;
+  --brand-950:#0d1615;--brand-900:#14201e;--brand-800:#174a44;
+  --brand-700:#0f5c53;--brand-600:#0f5c53;--brand-500:#14756a;
+  --brand-100:#cfe5df;--brand-50:#eaf4f1;
+  --app-bg:#f6f2e9;--app-surface:#fff;--app-surface-soft:#faf8f3;
+  --app-border:#e7e0d5;--app-text:#100f0d;--app-muted:#625f59;
+  --bg:#f6f2e9;--surface:#fff;--surface2:#f4f0e8;--border:#e7e0d5;
+  --border2:#d8cfc1;--text:#100f0d;--muted:#625f59;--deep:#0d1615;--indigo:#0f5c53;
+  --pass:#0f5c53;--pass-bg:#e5f2ee;--warn:#c05621;--warn-bg:#fdf0e2;
+  --fail:#9e3226;--fail-bg:#fbecea;--info:#0f5c53;--info-bg:#e5f2ee
+}
+body{background-color:var(--beige);color:var(--text)}
+.hero{background:linear-gradient(120deg,var(--pine),#173b36 62%,var(--teal))!important}
+.logo-mark,.logo-icon,.mark{background:var(--teal)!important}
+.btn,.save-btn,.ubtn,button.primary,.hbtn-accent{background-color:var(--teal);border-color:var(--teal);color:#fff}
+.btn:hover,.save-btn:hover,.ubtn:hover,button.primary:hover,.hbtn-accent:hover{background-color:var(--teal-dark)!important}
+.btn.red{background-color:var(--brick)!important}.btn.amber{background-color:var(--orange)!important}
+.notice,.result,.info-bar,.bn-val{background:var(--sage)!important;color:var(--teal)!important;border-color:#cfe5df!important}
+.bn-fail{background:var(--brick-bg)!important;color:var(--brick)!important;border-color:#e8c9c3!important}
+.bn-chg{background:var(--orange-bg)!important;color:var(--orange)!important;border-color:#efd4b9!important}
