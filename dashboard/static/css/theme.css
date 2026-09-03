@@ -1,4 +1,7 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;750;800&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=IBM+Plex+Mono:wght@500;600&display=swap');
 :root{
+  --font-display:'Source Serif 4',Georgia,serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
   --brand-950:#1e1b4b;--brand-900:#312e81;--brand-800:#3730a3;
   --brand-700:#4338ca;--brand-600:#4f46e5;--brand-500:#6366f1;
   --brand-100:#e0e7ff;--brand-50:#eef2ff;

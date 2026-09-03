@@ -1,6 +1,8 @@
 var activeTable=null,allResults={},allStates={},lastLogCount=0;
 var uploadSide='source',uploadFileQueue=[];
-var currentFsFilter='all';
+var currentFsFilter={};
+var fieldsTotalsCache={};
+var uploadFieldMappingState={pairName:'',sourceColumns:[],targetColumns:[],suggested:{}};
 
 async function init(){await refresh();setInterval(refresh,4000);}
 
@@ -179,6 +181,9 @@ function renderDetail(r){
     '<span><b>Transformation applied:</b> '+esc(tx.rulebook)+' — '+fmt(tx.applied_rules)+' rules changed '+fmt(tx.changed_cells)+' cells across '+fmt(tx.changed_rows)+' rows.</span>'+
     '<button class="fs-btn" onclick="openTransformModal()">View rules</button></div>':'';
   var so=r.records_only_in_source, to=r.records_only_in_target;
+  var pairKey=r.source_file+'|'+r.target_file;
+  var totalsNow=fieldsTotalsCache[pairKey];
+  var cvLabel=fmt((r.field_results||[]).length);
   var cards='<div class="cards">'+
     card(fmt(r.total_source_records),'Source records','')+
     card(fmt(r.total_target_records),'Target records','')+
@@ -188,6 +193,7 @@ function renderDetail(r){
     card(r.fields_passed,'Fields passed','ok')+
     card(r.fields_failed,'Fields failed',r.fields_failed?'warn':'ok')+
     card(r.pass_rate_pct+'%','Pass rate','blue')+
+    cardBtn(cvLabel,'Columns validating','blue','openColumnsValidatedModal',r.name,'cv-tile')+
     '</div>';
   var mapHtml='';
   if(r.mapping){
@@ -203,12 +209,12 @@ function renderDetail(r){
       :'<span style="color:var(--muted);font-size:10px">none</span>';
     var crossHtml='';
     if(r.field_mapping_detail&&r.field_mapping_detail.mapped_fields){
-      var crosses=r.field_mapping_detail.mapped_fields.filter(function(d){return d.method!=='exact';});
-      if(crosses.length){
-        crossHtml='<div class="map-box" style="grid-column:1/-1"><h5>Cross-name mappings ('+crosses.length+')</h5>'+
-          crosses.map(function(d){return '<span class="mtag cross">'+(d.source_label||d.source_field)+
+      var mappedFields=r.field_mapping_detail.mapped_fields;
+      if(mappedFields.length){
+        crossHtml='<div class="map-box" style="grid-column:1/-1"><h5>Mapped source → target fields ('+mappedFields.length+')</h5>'+
+          mappedFields.map(function(d){return '<span class="mtag '+(d.method==='exact'?'':'cross')+'">'+esc(d.source_label||d.source_field)+
             '<small>'+esc(d.source_field)+' -> '+esc(d.target_field)+'</small>'+
-            '<small style="opacity:.7">'+d.method+'</small></span>';}).join('')+'</div>';
+            '<small style="opacity:.7">'+esc(d.method)+'</small></span>';}).join('')+'</div>';
       }
     }
     // Composite join key panel
@@ -352,6 +358,96 @@ function renderDetail(r){
     '<th>Field</th><th>Type</th><th>Total</th><th>Matched</th>'+
     '<th>Issues</th><th>Match %</th><th>Threshold</th><th>Status</th>'+
     '</tr></thead><tbody>'+frows+'</tbody></table></div>';
+  if(!totalsNow) loadFieldsTotals(r);
+}
+
+// Fetch the true common-column count for a pair (independent of the current
+// field selection) so the "Columns validated" tile can show N of M. Cached
+// per source/target file pair so it's fetched at most once per pair per session.
+async function loadFieldsTotals(r){
+  var pairKey=r.source_file+'|'+r.target_file;
+  try{
+    var data=await fetch('/api/fields/from-files',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({source_file:r.source_file,target_file:r.target_file,pair_name:r.name})
+    }).then(function(x){return x.json();});
+    fieldsTotalsCache[pairKey]=data;
+  }catch(e){return;}
+  if(activeTable===r.name){
+    var tile=document.getElementById('cv-tile');
+    if(tile){
+      var n=tile.querySelector('.n');
+      if(n) n.textContent=fmt((r.field_results||[]).length);
+    }
+  }
+}
+
+// Breakdown modal for the "Columns validated" tile: which common columns were
+// actually validated vs excluded by the current field selection vs genuinely
+// source-only/target-only (the latter reused from r.mapping, same data mapHtml uses).
+async function openColumnsValidatedModal(name){
+  var r=allResults[name];
+  if(!r) return;
+  var pairKey=r.source_file+'|'+r.target_file;
+  var totals=fieldsTotalsCache[pairKey];
+  if(!totals){
+    await loadFieldsTotals(r);
+    totals=fieldsTotalsCache[pairKey];
+  }
+  totals=totals||{fields:[],common:0};
+  var labelOf={};
+  (totals.fields||[]).forEach(function(f){labelOf[f.field]=f.label;});
+  var allCommon=(totals.fields||[]).filter(function(f){return f.common;}).map(function(f){return f.field;});
+  var validatedSet={};
+  (r.field_results||[]).forEach(function(fr){validatedSet[fr.field]=true;});
+  var validatedCommon=allCommon.filter(function(c){return validatedSet[c];});
+  var notValidated=allCommon.filter(function(c){return !validatedSet[c];});
+  var selSet={};
+  (r.selected_fields||[]).forEach(function(s){selSet[String(s).toUpperCase()]=true;});
+  var hasSelection=(r.selected_fields||[]).length>0;
+  var excluded=notValidated.filter(function(c){return hasSelection&&!selSet[c];});
+  var otherGap=notValidated.filter(function(c){return !(hasSelection&&!selSet[c]);});
+  var crossMapped=(r.field_results||[]).filter(function(fr){return allCommon.indexOf(fr.field)<0;});
+
+  function tagList(codes,cls){
+    if(!codes.length) return '<span style="color:var(--muted);font-size:10px">none</span>';
+    return codes.map(function(c){
+      var lbl=labelOf[c]||c;
+      return '<span class="mtag '+(cls||'')+'" title="'+esc(c)+'">'+esc(lbl)+
+        (lbl!==c?'<small>'+esc(c)+'</small>':'')+'</span>';
+    }).join('');
+  }
+  var m=r.mapping||{};
+  var sol=m.source_only_labels||{}, tol=m.target_only_labels||{};
+  var so2=(m.source_only_fields&&m.source_only_fields.length)
+    ?m.source_only_fields.map(function(f){return '<span class="mtag w" title="'+esc(f)+'">'+esc(sol[f]||f)+
+      (sol[f]&&sol[f]!==f?'<small>'+esc(f)+'</small>':'')+'</span>';}).join('')
+    :'<span style="color:var(--muted);font-size:10px">none</span>';
+  var to2=(m.target_only_fields&&m.target_only_fields.length)
+    ?m.target_only_fields.map(function(f){return '<span class="mtag w" title="'+esc(f)+'">'+esc(tol[f]||f)+
+      (tol[f]&&tol[f]!==f?'<small>'+esc(f)+'</small>':'')+'</span>';}).join('')
+    :'<span style="color:var(--muted);font-size:10px">none</span>';
+
+  var validatedCount=validatedCommon.length+crossMapped.length;
+  document.getElementById('cv-modal-sub').textContent=r.source_file+' vs '+r.target_file;
+  document.getElementById('cv-modal-body').innerHTML=
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px;font-family:var(--font-mono)">'+
+      validatedCount+' of '+allCommon.length+' common columns validated'+
+      (excluded.length?', '+excluded.length+' excluded by your field selection':'')+'.</div>'+
+    '<div class="map-grid">'+
+    '<div class="map-box" style="grid-column:1/-1"><h5>Validated ('+validatedCount+')</h5>'+
+      tagList(validatedCommon,'')+
+      crossMapped.map(function(fr){
+        var lbl=fr.display_name||fr.field_label||fr.field;
+        return '<span class="mtag cross" title="'+esc(fr.field)+'">'+esc(lbl)+'<small>cross-mapped</small></span>';
+      }).join('')+
+    '</div>'+
+    (excluded.length?'<div class="map-box" style="grid-column:1/-1"><h5>Excluded by selection ('+excluded.length+')</h5>'+tagList(excluded,'w')+'</div>':'')+
+    (otherGap.length?'<div class="map-box" style="grid-column:1/-1"><h5>Common but not matched ('+otherGap.length+')</h5>'+tagList(otherGap,'w')+'</div>':'')+
+    '<div class="map-box"><h5>Source-only (not validated)</h5>'+so2+'</div>'+
+    '<div class="map-box"><h5>Target-only (not validated)</h5>'+to2+'</div>'+
+    '</div>';
+  document.getElementById('columns-validated-modal').classList.add('open');
 }
 
 function openFieldRecords(name,field,status){
@@ -431,6 +527,98 @@ async function confirmUpload(){
   toast('Uploaded to '+uploadSide+': '+saved.join(', ')+
     (selectedRules?' · automatic '+selectedRules+' rules enabled':''),'success');
   setTimeout(function(){closeModal('upload-modal');refresh();},900);
+  // Optional refinement, not on the critical path: if this upload just completed a
+  // source+target pair, offer the column picker. Never blocks/delays the automatic
+  // all-fields validation that scan_and_validate_all() already kicked off server-side.
+  checkAndShowFieldPicker(saved).catch(function(){});
+}
+
+// Does one of the files we just saved belong to a pair that now has both a source
+// and a target on disk? /api/upload/<side> only tells us about the side we uploaded,
+// so we cross-check against /api/status's pairs list (has_pair + source_file/target_file)
+// to detect "pair just became complete" — there is no explicit signal for this from the
+// upload route itself.
+async function checkAndShowFieldPicker(savedFiles){
+  if(!savedFiles||!savedFiles.length) return;
+  var status=await fetch('/api/status').then(function(r){return r.json();});
+  var pair=(status.pairs||[]).filter(function(p){
+    return p.has_pair&&(savedFiles.indexOf(p.source_file)>=0||savedFiles.indexOf(p.target_file)>=0);
+  })[0];
+  if(!pair) return;
+  await openUploadFieldsPanel(pair.source_file,pair.target_file,pair.name);
+}
+
+async function openUploadFieldsPanel(srcFile,tgtFile,pairName){
+  var res=await fetch('/api/fields/from-files',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({source_file:srcFile,target_file:tgtFile,pair_name:pairName||''})
+  });
+  var data=await res.json();
+  if(!data.fields||!data.fields.length) return;
+  document.getElementById('uf-modal-sub').textContent=
+    (pairName?pairName+': ':'')+srcFile+' vs '+tgtFile;
+  document.getElementById('uf-summary').textContent=
+    data.common+' common column'+(data.common!==1?'s':'')+
+    (data.src_only?', '+data.src_only+' source-only':'')+
+    (data.tgt_only?', '+data.tgt_only+' target-only':'')+'.';
+  document.getElementById('uf-field-st').textContent='';
+  renderUploadFieldMappings(data,pairName);
+  renderFieldCheckboxes(data.fields,data,'uf-');
+  document.getElementById('upload-fields-modal').classList.add('open');
+}
+
+function renderUploadFieldMappings(data,pairName){
+  uploadFieldMappingState={
+    pairName:(pairName||data.pair_name||'').toUpperCase(),
+    sourceColumns:data.source_columns||[],targetColumns:data.target_columns||[],
+    suggested:data.field_mapping||{}
+  };
+  var rows=document.getElementById('uf-mapping-rows');
+  var targets=uploadFieldMappingState.targetColumns;
+  rows.innerHTML=uploadFieldMappingState.sourceColumns.map(function(source){
+    var selected=uploadFieldMappingState.suggested[source]||'';
+    return '<div class="upload-mapping-row"><div class="upload-mapping-source" title="'+esc(source)+'">'+esc(source)+'</div>'+
+      '<div class="upload-mapping-arrow">→</div><select class="uf-map-target" data-source="'+esc(source)+'">'+
+      '<option value="">— do not validate —</option>'+targets.map(function(target){
+        return '<option value="'+esc(target)+'"'+(target===selected?' selected':'')+'>'+esc(target)+'</option>';
+      }).join('')+'</select></div>';
+  }).join('')||'<div class="empty-msg">No source columns found.</div>';
+  document.getElementById('uf-mapping-st').textContent=data.mapping_is_manual
+    ?'Saved pair mapping loaded.':'Suggestions loaded. Review them before validation.';
+}
+
+function autoFillUploadMappings(){
+  document.querySelectorAll('.uf-map-target').forEach(function(select){
+    select.value=uploadFieldMappingState.suggested[select.dataset.source]||'';
+  });
+}
+
+async function saveUploadMappingAndSelection(){
+  var st=document.getElementById('uf-mapping-st');
+  var mapping={},used={};
+  var duplicate='';
+  document.querySelectorAll('.uf-map-target').forEach(function(select){
+    if(!select.value||duplicate) return;
+    if(used[select.value]){duplicate=select.value;return;}
+    mapping[select.dataset.source]=select.value;used[select.value]=true;
+  });
+  if(duplicate){st.style.color='var(--fail)';st.textContent='Target column '+duplicate+' is selected more than once.';return;}
+  if(!Object.keys(mapping).length){st.style.color='var(--fail)';st.textContent='Map at least one source column to a target column.';return;}
+  st.style.color='var(--muted)';st.textContent='Saving mapping…';
+  try{
+    var res=await fetch('/api/field-mappings/'+encodeURIComponent(uploadFieldMappingState.pairName),{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping:mapping})
+    });
+    var data=await res.json();
+    if(!res.ok){st.style.color='var(--fail)';st.textContent=data.error||'Mapping could not be saved.';return;}
+    st.style.color='var(--pass)';st.textContent=data.mapped+' mappings saved. Applying field selection…';
+    if(document.querySelectorAll('#uf-field-checkboxes input:not(:disabled)').length){
+      await saveFieldSelection('uf-','upload-fields-modal');
+    }else{
+      toast(data.mapped+' field mappings saved and validation started','success');
+      setTimeout(function(){closeModal('upload-fields-modal');refresh();},700);
+    }
+  }catch(e){st.style.color='var(--fail)';st.textContent='Error: '+e;}
 }
 
 // Pair manager
@@ -702,16 +890,21 @@ async function deleteTemplate(filename){
   }catch(e){st.style.color='var(--fail)';st.textContent='Error: '+e;}
 }
 
-// Field selection checkboxes
-function renderFieldCheckboxes(fields,summary){
-  var grid=document.getElementById('field-checkboxes');
-  var bar=document.getElementById('fs-filter-bar');
+// Field selection checkboxes. `prefix` selects which container this instance
+// targets ('' = the Settings modal's original #field-checkboxes/#fs-* ids,
+// 'uf-' = the post-upload picker's #uf-field-checkboxes/#uf-fs-* ids), so the
+// same component can be rendered into more than one panel at once.
+function renderFieldCheckboxes(fields,summary,prefix){
+  prefix=prefix||'';
+  var grid=document.getElementById(prefix+'field-checkboxes');
+  var bar=document.getElementById(prefix+'fs-filter-bar');
+  currentFsFilter[prefix]='all';
   bar.innerHTML=
     '<button class="fs-btn" style="background:var(--accent);color:#fff;border-color:var(--accent)" '+
-    'onclick="setFsFilter(this,\'all\')">All ('+fields.length+')</button>'+
-    (summary&&summary.common?'<button class="fs-btn" onclick="setFsFilter(this,\'common\')">Common ('+summary.common+')</button>':'')+
-    (summary&&summary.src_only?'<button class="fs-btn" onclick="setFsFilter(this,\'src_only\')">Src only ('+summary.src_only+')</button>':'')+
-    (summary&&summary.tgt_only?'<button class="fs-btn" onclick="setFsFilter(this,\'tgt_only\')">Tgt only ('+summary.tgt_only+')</button>':'');
+    'onclick="setFsFilter(this,\'all\',\''+prefix+'\')">All ('+fields.length+')</button>'+
+    (summary&&summary.common?'<button class="fs-btn" onclick="setFsFilter(this,\'common\',\''+prefix+'\')">Common ('+summary.common+')</button>':'')+
+    (summary&&summary.src_only?'<button class="fs-btn" onclick="setFsFilter(this,\'src_only\',\''+prefix+'\')">Src only ('+summary.src_only+')</button>':'')+
+    (summary&&summary.tgt_only?'<button class="fs-btn" onclick="setFsFilter(this,\'tgt_only\',\''+prefix+'\')">Tgt only ('+summary.tgt_only+')</button>':'');
   if(!fields||!fields.length){
     grid.innerHTML='<div style="color:var(--muted);font-size:11px;padding:8px;grid-column:1/-1">No fields found.</div>';return;
   }
@@ -724,32 +917,36 @@ function renderFieldCheckboxes(fields,summary){
     var tc=f.in_target?'<span style="font-size:8px;background:var(--info-bg);color:var(--info);padding:0 4px;border-radius:3px;margin-left:2px">T</span>':'';
     return '<label class="fc-item"'+(canSel?'':' style="opacity:.45" title="not in both files"')+
       ' data-field="'+f.field.toLowerCase()+'" data-label="'+lbl.toLowerCase()+'" data-role="'+role+'">'+
-      '<input type="checkbox" value="'+esc(f.field)+'"'+(f.selected?' checked':'')+(canSel?'':' disabled')+' onchange="updateFsCount()">'+
+      '<input type="checkbox" value="'+esc(f.field)+'"'+(f.selected?' checked':'')+(canSel?'':' disabled')+' onchange="updateFsCount(\''+prefix+'\')">'+
       '<span><div class="fc-label">'+esc(lbl)+sc+tc+'</div>'+tech+'</span></label>';
   }).join('');
-  updateFsCount();
+  updateFsCount(prefix);
 }
-function setFsFilter(btn,filter){
-  document.querySelectorAll('#fs-filter-bar .fs-btn').forEach(function(b){
+function setFsFilter(btn,filter,prefix){
+  prefix=prefix||'';
+  document.querySelectorAll('#'+prefix+'fs-filter-bar .fs-btn').forEach(function(b){
     b.style.background='transparent';b.style.borderColor='var(--border)';b.style.color='var(--muted)';});
   btn.style.background='var(--accent)';btn.style.borderColor='var(--accent)';btn.style.color='#fff';
-  currentFsFilter=filter;filterFieldCheckboxes();
+  currentFsFilter[prefix]=filter;filterFieldCheckboxes(prefix);
 }
-function filterFieldCheckboxes(){
-  var q=(document.getElementById('fs-search').value||'').toLowerCase();
-  document.querySelectorAll('#field-checkboxes .fc-item').forEach(function(item){
+function filterFieldCheckboxes(prefix){
+  prefix=prefix||'';
+  var q=(document.getElementById(prefix+'fs-search').value||'').toLowerCase();
+  var filter=currentFsFilter[prefix]||'all';
+  document.querySelectorAll('#'+prefix+'field-checkboxes .fc-item').forEach(function(item){
     var field=item.dataset.field||'',label=item.dataset.label||'',role=item.dataset.role||'';
-    item.style.display=((currentFsFilter==='all'||currentFsFilter===role)&&(!q||field.indexOf(q)>=0||label.indexOf(q)>=0))?'':'none';
+    item.style.display=((filter==='all'||filter===role)&&(!q||field.indexOf(q)>=0||label.indexOf(q)>=0))?'':'none';
   });
 }
-function selectAllFields(){document.querySelectorAll('#field-checkboxes input:not(:disabled)').forEach(function(cb){cb.checked=true;});updateFsCount();}
-function clearAllFields(){document.querySelectorAll('#field-checkboxes input:not(:disabled)').forEach(function(cb){cb.checked=false;});updateFsCount();}
-function selectVisible(){document.querySelectorAll('#field-checkboxes .fc-item:not([style*="display: none"]) input:not(:disabled)').forEach(function(cb){cb.checked=true;});updateFsCount();}
-function clearVisible(){document.querySelectorAll('#field-checkboxes .fc-item:not([style*="display: none"]) input:not(:disabled)').forEach(function(cb){cb.checked=false;});updateFsCount();}
-function updateFsCount(){
-  var en=document.querySelectorAll('#field-checkboxes input:not(:disabled)');
-  var ch=document.querySelectorAll('#field-checkboxes input:not(:disabled):checked');
-  document.getElementById('fs-count').textContent=
+function selectAllFields(prefix){prefix=prefix||'';document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled)').forEach(function(cb){cb.checked=true;});updateFsCount(prefix);}
+function clearAllFields(prefix){prefix=prefix||'';document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled)').forEach(function(cb){cb.checked=false;});updateFsCount(prefix);}
+function selectVisible(prefix){prefix=prefix||'';document.querySelectorAll('#'+prefix+'field-checkboxes .fc-item:not([style*="display: none"]) input:not(:disabled)').forEach(function(cb){cb.checked=true;});updateFsCount(prefix);}
+function clearVisible(prefix){prefix=prefix||'';document.querySelectorAll('#'+prefix+'field-checkboxes .fc-item:not([style*="display: none"]) input:not(:disabled)').forEach(function(cb){cb.checked=false;});updateFsCount(prefix);}
+function updateFsCount(prefix){
+  prefix=prefix||'';
+  var en=document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled)');
+  var ch=document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled):checked');
+  document.getElementById(prefix+'fs-count').textContent=
     (ch.length===en.length&&en.length>0)?'All fields ('+en.length+')':ch.length+' of '+en.length+' selected';
 }
 function updateThrDisplay(){document.getElementById('thr-display').textContent=document.getElementById('thr-slider').value+'%';}
@@ -772,24 +969,27 @@ async function saveThreshold(){
     toast('Threshold: '+thr+'%','info');setTimeout(refresh,800);}
   else{st.style.color='var(--fail)';st.textContent='Failed';}
 }
-async function saveFieldSelection(){
-  var allEn=document.querySelectorAll('#field-checkboxes input:not(:disabled)');
-  if(allEn.length===0){var st=document.getElementById('field-st');st.style.color='var(--warn)';st.textContent='No fields loaded yet.';return;}
-  var allCh=document.querySelectorAll('#field-checkboxes input:not(:disabled):checked');
+async function saveFieldSelection(prefix,closeModalId){
+  prefix=prefix||'';
+  var allEn=document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled)');
+  var st=document.getElementById(prefix+'field-st');
+  if(allEn.length===0){if(st){st.style.color='var(--warn)';st.textContent='No fields loaded yet.';}return;}
+  var allCh=document.querySelectorAll('#'+prefix+'field-checkboxes input:not(:disabled):checked');
   var selected=[];allCh.forEach(function(cb){selected.push(cb.value);});
   var toSave=selected.length===allEn.length?[]:selected;
-  var st=document.getElementById('field-st');st.style.color='var(--muted)';st.textContent='Saving...';
+  if(st){st.style.color='var(--muted)';st.textContent='Saving...';}
   try{
     var res=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({selected_fields:toSave})});
     var data=await res.json();
     if(data.ok){
-      st.style.color='var(--pass)';
       var lbl=toSave.length?toSave.length+' field(s) selected':'All fields';
-      st.textContent=lbl+' - re-validating...';toast(lbl+' applied','success');
+      if(st){st.style.color='var(--pass)';st.textContent=lbl+' - re-validating...';}
+      toast(lbl+' applied','success');
+      if(closeModalId) setTimeout(function(){closeModal(closeModalId);},500);
       setTimeout(refresh,1200);
-    }else{st.style.color='var(--fail)';st.textContent=data.error||'Failed';}
-  }catch(e){st.style.color='var(--fail)';st.textContent='Error: '+e;}
+    }else if(st){st.style.color='var(--fail)';st.textContent=data.error||'Failed';}
+  }catch(e){if(st){st.style.color='var(--fail)';st.textContent='Error: '+e;}}
 }
 async function uploadLabels(input){
   if(!input.files||!input.files.length) return;
@@ -866,6 +1066,12 @@ function toast(msg,lvl){
   setTimeout(function(){el.classList.add('rm');setTimeout(function(){el.remove();},230);},5000);
 }
 function card(val,lbl,cls){return '<div class="card '+cls+'"><div class="n">'+val+'</div><div class="l">'+lbl+'</div></div>';}
+function cardBtn(val,lbl,cls,fnName,dataN,id){
+  return '<div class="card '+cls+' card-btn"'+(id?' id="'+id+'"':'')+
+    ' role="button" tabindex="0" onclick="'+fnName+'(this.dataset.n)" data-n="'+esc(dataN)+'"'+
+    ' title="Click to see which columns were validated">'+
+    '<div class="n" style="font-family:var(--font-mono)">'+val+'</div><div class="l">'+lbl+'</div></div>';
+}
 function fmt(n){return Number(n).toLocaleString();}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 

@@ -1,17 +1,20 @@
 """Persistent database layer for GenMove.
 
-Set DATABASE_URL to use an external database, for example:
-mysql+pymysql://genmove:change-me@127.0.0.1:3306/genmove
+Set DATABASE_URL to your PostgreSQL instance, for example:
+postgresql+psycopg://genmove:change-me@127.0.0.1:5432/genmove
 
-When no external database is configured, GenMove automatically uses the
-embedded ``config/genmove_local.db`` SQLite database.  This keeps login,
-governance, and validation history available without MySQL or Docker.
+Alternatively set PG_HOST / PG_PORT / PG_USER / PG_PASSWORD / PG_DATABASE
+and GenMove builds the URL for you. MySQL remains supported via MYSQL_HOST
+etc. for backward compatibility, but PostgreSQL is the recommended backend.
+
+If no database is configured, GenMove runs with persistence disabled: login,
+governance, and validation history will not be saved until DATABASE_URL (or
+PG_HOST) is set. There is no automatic local-file fallback.
 """
 from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from pathlib import Path
 
 
 class DatabaseStore:
@@ -25,7 +28,7 @@ class DatabaseStore:
     def __init__(self, database_url=""):
         self.database_url = database_url.strip()
         self.engine = None
-        self.error = "Database disabled (DATABASE_URL is not set)"
+        self.error = "Database disabled (set DATABASE_URL or PG_HOST to your PostgreSQL instance)"
         self.tables = {}
         if self.database_url:
             self._connect()
@@ -33,6 +36,19 @@ class DatabaseStore:
     @classmethod
     def from_environment(cls):
         url = os.environ.get("DATABASE_URL", "").strip()
+        if url.startswith("postgres://"):
+            url = "postgresql+psycopg://" + url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+        pg_host = os.environ.get("PG_HOST") or os.environ.get("PGHOST")
+        if not url and pg_host:
+            from urllib.parse import quote_plus
+            user = quote_plus(os.environ.get("PG_USER") or os.environ.get("PGUSER", "genmove"))
+            password = quote_plus(os.environ.get("PG_PASSWORD") or os.environ.get("PGPASSWORD", ""))
+            host = pg_host
+            port = os.environ.get("PG_PORT") or os.environ.get("PGPORT", "5432")
+            database = os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE", "genmove")
+            url = f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}"
         if not url and os.environ.get("MYSQL_HOST"):
             from urllib.parse import quote_plus
             user = quote_plus(os.environ.get("MYSQL_USER", "genmove"))
@@ -41,13 +57,7 @@ class DatabaseStore:
             port = os.environ.get("MYSQL_PORT", "3306")
             database = os.environ.get("MYSQL_DATABASE", "genmove")
             url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
-        local_db = Path(__file__).resolve().parent.parent / "config" / "genmove_local.db"
-        local_db.parent.mkdir(parents=True, exist_ok=True)
-        local_url = f"sqlite:///{local_db}"
-        if not url:
-            return cls(local_url)
-        store = cls(url)
-        return store if store.enabled else cls(local_url)
+        return cls(url)
 
     @property
     def enabled(self):
@@ -57,8 +67,13 @@ class DatabaseStore:
         try:
             from sqlalchemy import (create_engine, MetaData, Table, Column, Integer,
                                     String, Text, DateTime, ForeignKey, Index)
-            self.engine = create_engine(self.database_url, pool_pre_ping=True,
-                                        pool_recycle=1800, future=True)
+            engine_options = {"pool_pre_ping": True, "pool_recycle": 1800, "future": True}
+            if self.database_url.startswith("postgresql"):
+                engine_options["connect_args"] = {
+                    "connect_timeout": int(os.environ.get("PG_CONNECT_TIMEOUT", "10")),
+                    "application_name": "GenMove-V1",
+                }
+            self.engine = create_engine(self.database_url, **engine_options)
             metadata = MetaData()
             runs = Table(
                 "validation_runs", metadata,
@@ -157,8 +172,9 @@ class DatabaseStore:
                            "rules": correction_rules, "audit": audit, "users": users,
                            "transform_rules": transform_rules, "transform_jobs": transform_jobs}
             metadata.create_all(self.engine)
+            from sqlalchemy import text
             with self.engine.connect() as conn:
-                conn.execute(runs.select().limit(1))
+                conn.execute(text("SELECT 1"))
             self.error = ""
         except Exception as exc:
             self.engine = None
@@ -361,6 +377,14 @@ class DatabaseStore:
         with self.engine.connect() as conn:
             rows = conn.execute(query.order_by(table.c.updated_at.desc())).mappings().all()
         return [{k: (v.isoformat(sep=" ") if hasattr(v, "isoformat") else v) for k, v in row.items()} for row in rows]
+
+    def get_transform_rule(self, rule_id):
+        if not self.enabled: return None
+        from sqlalchemy import select
+        table = self.tables["transform_rules"]
+        with self.engine.connect() as conn:
+            row = conn.execute(select(table).where(table.c.id == int(rule_id))).mappings().first()
+        return dict(row) if row else None
 
     def save_transform_rule(self, payload, actor):
         if not self.enabled: return None

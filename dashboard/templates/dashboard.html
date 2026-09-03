@@ -29,7 +29,7 @@
     <span class="thr-badge" id="thr-badge">Threshold: 100%</span>
     <span class="tmpl-badge" id="tmpl-badge" style="display:none">📋 Template active</span>
     <button class="hbtn hbtn-ghost" onclick="location.href='/home'">Home</button>
-    <button class="hbtn hbtn-ghost" onclick="window.open('/database','_blank')" title="View native MySQL tables">Database</button>
+    <button class="hbtn hbtn-ghost" onclick="window.open('/database','_blank')" title="View PostgreSQL application tables">Database</button>
     <button class="hbtn hbtn-ghost" onclick="openLog()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
@@ -342,6 +342,66 @@
         <button class="save-btn" style="width:100%;margin-top:10px" onclick="confirmUpload()">Upload all</button>
         <div class="s-status" id="upload-status"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Post-upload column picker: shown as soon as a source/target pair is complete -->
+<div class="overlay" id="upload-fields-modal">
+  <div class="modal" style="width:640px">
+    <div class="modal-hd">
+      <h3 style="font-family:var(--font-display);font-weight:600">Columns found — pick what to validate</h3>
+      <button class="mclose" onclick="closeModal('upload-fields-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fs-note" id="uf-modal-sub" style="margin-bottom:2px"></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:var(--font-mono)" id="uf-summary"></div>
+      <div class="upload-mapping-panel">
+        <div class="upload-mapping-head">
+          <div>
+            <strong>Source → target field mapping</strong>
+            <span>Confirm or change how every source column maps before validation.</span>
+          </div>
+          <button class="fs-btn" type="button" onclick="autoFillUploadMappings()">Use suggestions</button>
+        </div>
+        <div id="uf-mapping-rows" class="upload-mapping-rows"></div>
+        <div class="s-status" id="uf-mapping-st"></div>
+      </div>
+      <input type="text" id="uf-fs-search" class="f-inp"
+             style="font-size:11px;padding:6px 10px;margin-bottom:7px"
+             placeholder="Search by label or field code…" oninput="filterFieldCheckboxes('uf-')">
+      <div id="uf-fs-filter-bar" style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px"></div>
+      <div class="fs-header">
+        <div class="fs-btns">
+          <button class="fs-btn" onclick="selectAllFields('uf-')">All</button>
+          <button class="fs-btn" onclick="clearAllFields('uf-')">None</button>
+          <button class="fs-btn" onclick="selectVisible('uf-')">Visible ✓</button>
+          <button class="fs-btn" onclick="clearVisible('uf-')">Visible ✗</button>
+        </div>
+        <span class="fs-count" id="uf-fs-count">0 selected</span>
+      </div>
+      <div class="fs-grid" id="uf-field-checkboxes">
+        <div style="color:var(--muted);font-size:11px;padding:8px;grid-column:1/-1">Loading columns…</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="save-btn" style="flex:1" onclick="saveUploadMappingAndSelection()">Save mapping &amp; validate</button>
+        <button class="fs-btn" style="flex:1;padding:7px 14px" onclick="saveUploadMappingAndSelection()">Use suggestions &amp; validate</button>
+      </div>
+      <div class="s-status" id="uf-field-st"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Columns-validated breakdown, opened from the result detail's "Columns validated" tile -->
+<div class="overlay" id="columns-validated-modal">
+  <div class="modal" style="width:640px">
+    <div class="modal-hd">
+      <h3 style="font-family:var(--font-display);font-weight:600">Columns validated</h3>
+      <button class="mclose" onclick="closeModal('columns-validated-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="fs-note" id="cv-modal-sub" style="margin-bottom:10px"></div>
+      <div id="cv-modal-body"></div>
     </div>
   </div>
 </div>

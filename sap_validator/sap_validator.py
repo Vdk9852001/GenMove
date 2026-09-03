@@ -150,16 +150,19 @@ def parse_xml_workbook(path):
 def parse_excel_file(path):
     """Returns {headers: [...], data: [...]}"""
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows: return {"headers": [], "data": []}
-    headers = [str(h or "").strip() for h in rows[0]]
-    data = []
-    for row in rows[1:]:
-        rec = {headers[i]: str(row[i] if row[i] is not None else "").strip()
-               for i in range(min(len(headers), len(row)))}
-        if any(rec.values()): data.append(rec)
-    return {"headers": headers, "data": data}
+    try:
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows: return {"headers": [], "data": []}
+        headers = [str(h or "").strip() for h in rows[0]]
+        data = []
+        for row in rows[1:]:
+            rec = {headers[i]: str(row[i] if row[i] is not None else "").strip()
+                   for i in range(min(len(headers), len(row)))}
+            if any(rec.values()): data.append(rec)
+        return {"headers": headers, "data": data}
+    finally:
+        wb.close()
 
 # ─── Dynamic Field Mapper ──────────────────────────────────────────────────────
 def build_field_map(excel_headers, xml_fields):
@@ -170,6 +173,7 @@ def build_field_map(excel_headers, xml_fields):
             label_to_sap[key] = code
 
     def norm(s): return re.sub(r'[^a-z0-9]','', (s or "").lower())
+    def norm_words(s): return re.sub(r'[^a-z0-9\s]','', (s or "").lower()).split()
 
     result = {}
     for h in excel_headers:
@@ -179,7 +183,7 @@ def build_field_map(excel_headers, xml_fields):
         if direct:                                  result[h] = direct; continue
         sap = label_to_sap.get(hn) or label_to_sap.get(h.lower())
         if sap and sap in xml_fields:               result[h] = sap; continue
-        words = [w for w in hn.split() if len(w) > 3]
+        words = [w for w in norm_words(h) if len(w) > 3]
         partial = next((f for f in xml_fields
                         if words and all(w in norm(SAP_LABELS.get(f, f)) for w in words)), None)
         if partial:                                 result[h] = partial; continue
@@ -427,7 +431,9 @@ def export_excel_report(results, path):
 
 # ─── AI Column Mapping via Claude ─────────────────────────────────────────────
 def ai_match_columns(excel_headers, xml_fields, api_key):
-    if not ANTHROPIC_OK or not api_key: return {}
+    """Returns a dict of header→SAP field on success (possibly empty if the AI
+    genuinely found no matches), or None if the call/parse failed outright."""
+    if not ANTHROPIC_OK or not api_key: return None
     client = anthropic.Anthropic(api_key=api_key)
     prompt = (
         f"You are an SAP data migration expert. Map these Excel headers to SAP XML field codes.\n"
@@ -444,7 +450,9 @@ def ai_match_columns(excel_headers, xml_fields, api_key):
     try:
         clean = re.sub(r"```json|```", "", text).strip()
         return json.loads(clean)
-    except: return {}
+    except Exception as e:
+        print(f"AI mapping: failed to parse Claude response: {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # GUI
@@ -804,11 +812,20 @@ class SAPValidator(tk.Tk):
         self.run_btn.config(state=tk.DISABLED)
 
         def _do():
-            r = run_validation(self.xml_sheets, self.excel_data, self.excel_headers,
-                               self.join_keys, self.field_map)
+            try:
+                r = run_validation(self.xml_sheets, self.excel_data, self.excel_headers,
+                                   self.join_keys, self.field_map)
+            except Exception as e:
+                self.after(0, lambda err=e: self._validation_failed(err))
+                return
             self.after(0, lambda: self._show_results(r))
 
         threading.Thread(target=_do, daemon=True).start()
+
+    def _validation_failed(self, e):
+        self.run_btn.config(state=tk.NORMAL)
+        self._status(f"Validation failed: {e}", "fail")
+        messagebox.showerror("Validation Error", str(e))
 
     def _show_results(self, results):
         self.results = results
@@ -1119,7 +1136,14 @@ class SAPValidator(tk.Tk):
                 (h for h in self.excel_headers
                  if (record["excel_rec"].get(h) or "").lower().strip() == xml_val),
                 None
-            ) or self.excel_headers[0]
+            )
+            if not excel_match_field:
+                messagebox.showerror("No Matching Column",
+                    f"Could not find an Excel column whose value matches the XML "
+                    f"field '{xml_match_field}' ({xml_val!r}) for this record. "
+                    "Nothing was learned — pick a different XML row, or verify "
+                    "the values actually correspond.")
+                return
 
             # Learn: update field map and join keys
             self.field_map[excel_match_field] = xml_match_field
@@ -1258,15 +1282,40 @@ class SAPValidator(tk.Tk):
 
         self._status("Calling Claude AI for column mapping…", "info")
         def _do():
-            new_map = ai_match_columns(self.excel_headers, primary["fields"], self.api_key)
-            def _apply():
-                for h, v in new_map.items():
-                    if not self.field_map.get(h) and v:
-                        self.field_map[h] = v
-                self._refresh_fm_display()
-                self._status("AI mapping applied!", "pass")
-            self.after(0, _apply)
+            try:
+                new_map = ai_match_columns(self.excel_headers, primary["fields"], self.api_key)
+            except Exception as e:
+                self.after(0, lambda err=e: self._ai_map_failed(err))
+                return
+            self.after(0, lambda: self._ai_map_done(new_map))
         threading.Thread(target=_do, daemon=True).start()
+
+    def _ai_map_done(self, new_map):
+        if new_map is None:
+            self._status("AI mapping failed — could not parse the AI response.", "fail")
+            messagebox.showerror("AI Mapping Error",
+                "The AI response could not be parsed as a valid mapping. "
+                "Try again, or check your API key/model access.")
+            return
+        if not new_map:
+            self._status("AI mapping returned no matches.", "warn")
+            messagebox.showwarning("AI Mapping",
+                "The AI did not find any column mappings for these headers.")
+            return
+        applied = 0
+        for h, v in new_map.items():
+            if not self.field_map.get(h) and v:
+                self.field_map[h] = v
+                applied += 1
+        self._refresh_fm_display()
+        if applied:
+            self._status(f"AI mapping applied — {applied} field(s) mapped.", "pass")
+        else:
+            self._status("AI mapping complete — no new fields were mapped.", "warn")
+
+    def _ai_map_failed(self, e):
+        self._status(f"AI mapping failed: {e}", "fail")
+        messagebox.showerror("AI Mapping Error", str(e))
 
     def _set_api_key(self):
         key = simpledialog.askstring("Anthropic API Key",

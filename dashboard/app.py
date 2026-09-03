@@ -22,6 +22,7 @@ from flask import (Flask, render_template, jsonify, send_file, request, Response
                    redirect, url_for, session)
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -39,9 +40,11 @@ from core.transformation_engine import (load_rulebook, rules_for_object, transfo
                                         save_transformed_source, sample_rulebook)
 
 app = Flask(__name__)
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  MAX_CONTENT_LENGTH=200 * 1024 * 1024)  # 200MB cap — SAP extracts can be large, but not unbounded
 
 BASE_DIR      = Path(__file__).parent.parent
+load_dotenv(BASE_DIR / ".env")
 REPORTS_DIR   = BASE_DIR / "reports"
 CONFIG_FILE   = BASE_DIR / "config.json"
 LABELS_FILE   = BASE_DIR / "custom_labels.csv"
@@ -67,6 +70,7 @@ DEFAULT_CONFIG = {
     "pass_threshold":  100.0,
     "selected_fields": [],
     "manual_pairs":    [],
+    "manual_field_mappings": {},
     "active_template": "",
     "transformation_rulebook": "",
     "source_rule_assignments": {},
@@ -84,8 +88,34 @@ activity_log = []
 SUPPORTED_EXT = {".csv", ".xlsx", ".xls"}
 TEMPLATE_EXT  = {".csv", ".xlsx", ".xls", ".txt"}
 scan_lock     = threading.Lock()
+store_lock    = threading.Lock()   # guards results_store / file_states / row_details_store / activity_log
 correction_rag = CorrectionRAG(CORRECTION_MEMORY_FILE)
 database_store = DatabaseStore.from_environment()
+
+# ── Login rate limiting (in-memory, no external dependency) ────────────────────
+_login_attempts     = {}   # {"email|ip": [timestamp, ...]}
+_login_lock         = threading.Lock()
+LOGIN_MAX_ATTEMPTS  = 5
+LOGIN_LOCKOUT_WINDOW = 15 * 60  # seconds
+
+
+def _login_rate_limited(key):
+    """True if this email/IP has hit the failed-attempt cap within the lockout window."""
+    now = time.time()
+    with _login_lock:
+        attempts = [t for t in _login_attempts.get(key, []) if now - t < LOGIN_LOCKOUT_WINDOW]
+        _login_attempts[key] = attempts
+        return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(key):
+    with _login_lock:
+        _login_attempts.setdefault(key, []).append(time.time())
+
+
+def _reset_login_failures(key):
+    with _login_lock:
+        _login_attempts.pop(key, None)
 
 
 @app.before_request
@@ -223,7 +253,7 @@ def cache_and_trim_row_details(result):
         stored = database_store.save_validation(result, cached)
     except Exception as exc:
         stored = False
-        log_event(f"MySQL persistence failed; using memory fallback: {exc}", "warn")
+        log_event(f"Database persistence failed: {exc}", "error")
     if stored:
         row_details_store[object_name] = {
             field: {"label": value["label"], "target_field": value["target_field"],
@@ -260,9 +290,10 @@ def get_dirs():
 
 def log_event(message, level="info"):
     entry = {"ts": datetime.now().strftime("%H:%M:%S"), "message": message, "level": level}
-    activity_log.append(entry)
-    if len(activity_log) > 200:
-        activity_log.pop(0)
+    with store_lock:
+        activity_log.append(entry)
+        if len(activity_log) > 200:
+            activity_log.pop(0)
     print(f"  [{entry['ts']}] [{level.upper()}] {message}")
     try:
         database_store.log_event(message, level)
@@ -289,11 +320,13 @@ def _read_file_headers(src_path: str, tgt_path: str = None):
             return []
         if p.suffix.lower() in (".xlsx", ".xls"):
             import openpyxl
-            wb   = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
-            ws   = wb.active
-            cols = [str(c.value).strip().upper()
-                    for c in next(ws.iter_rows(max_row=1)) if c.value]
-            wb.close()
+            wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+            try:
+                ws   = wb.active
+                cols = [str(c.value).strip().upper()
+                        for c in next(ws.iter_rows(max_row=1)) if c.value]
+            finally:
+                wb.close()
             return cols
         with open(str(p), encoding="utf-8-sig") as f:
             reader = csv_mod.reader(f)
@@ -326,23 +359,25 @@ def _read_template_fields(path: Path) -> list:
 
         elif suffix in (".xlsx", ".xls"):
             import openpyxl
-            wb        = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-            ws        = wb.active
-            first_row = True
-            for row in ws.iter_rows(values_only=True):
-                val = str(row[0] or "").strip()
-                if not val:
-                    continue
-                if val.startswith("#"):
-                    continue
-                val_up = val.upper()
-                if first_row:
-                    first_row = False
-                    if val_up in ("FIELD", "FIELD_NAME", "FIELDS", "SAP_FIELD",
-                                  "FIELDNAME", "SAP FIELD", "FIELD NAME"):
+            wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+            try:
+                ws        = wb.active
+                first_row = True
+                for row in ws.iter_rows(values_only=True):
+                    val = str(row[0] or "").strip()
+                    if not val:
                         continue
-                fields.append(val_up)
-            wb.close()
+                    if val.startswith("#"):
+                        continue
+                    val_up = val.upper()
+                    if first_row:
+                        first_row = False
+                        if val_up in ("FIELD", "FIELD_NAME", "FIELDS", "SAP_FIELD",
+                                      "FIELDNAME", "SAP FIELD", "FIELD NAME"):
+                            continue
+                    fields.append(val_up)
+            finally:
+                wb.close()
 
         else:  # CSV
             with open(str(path), encoding="utf-8-sig") as f:
@@ -432,6 +467,14 @@ def get_available_files():
     return src, tgt
 
 
+def _safe_mtime(path):
+    """Return a path's mtime, or None if it vanished between listing and stat (TOCTOU)."""
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
 def discover_pairs():
     SOURCE_DIR, TARGET_DIR = get_dirs()
     cfg          = load_config()
@@ -451,10 +494,16 @@ def discover_pairs():
         src_name = mp.get("source_file", "")
         tgt_name = mp.get("target_file", "")
         name     = mp.get("name", "").upper().strip() or Path(src_name).stem.upper()
-        sp       = str(src_files[src_name]) if src_name in src_files else None
-        tp       = str(tgt_files[tgt_name]) if tgt_name in tgt_files else None
+        sp        = str(src_files[src_name]) if src_name in src_files else None
+        tp        = str(tgt_files[tgt_name]) if tgt_name in tgt_files else None
+        src_mtime = _safe_mtime(sp) if sp else None
+        tgt_mtime = _safe_mtime(tp) if tp else None
+        if sp and src_mtime is None:   # file was deleted after the directory listing above
+            sp = None
+        if tp and tgt_mtime is None:
+            tp = None
         has_pair = bool(sp and tp)
-        mtime    = max(Path(sp).stat().st_mtime, Path(tp).stat().st_mtime) if has_pair else None
+        mtime    = max(src_mtime, tgt_mtime) if has_pair else None
         pairs.append({
             "name": name, "source_path": sp, "target_path": tp,
             "has_pair": has_pair, "mtime": mtime,
@@ -476,7 +525,11 @@ def discover_pairs():
     for stem in sorted(set(src_by_stem) & set(tgt_by_stem)):
         sf, sp = src_by_stem[stem]
         tf, tp = tgt_by_stem[stem]
-        mtime  = max(sp.stat().st_mtime, tp.stat().st_mtime)
+        src_mtime = _safe_mtime(sp)
+        tgt_mtime = _safe_mtime(tp)
+        if src_mtime is None or tgt_mtime is None:
+            continue  # file vanished after the directory listing above — skip this pair
+        mtime = max(src_mtime, tgt_mtime)
         pairs.append({
             "name": stem, "source_path": str(sp), "target_path": str(tp),
             "has_pair": True, "mtime": mtime,
@@ -581,19 +634,25 @@ def run_validation(name, source_path, target_path):
 
     src_no_jk = src_cols
 
-    custom_mapping = _read_mapping_file(MAPPING_FILE)
+    pair_mapping = {
+        str(source).strip().upper(): str(target).strip().upper()
+        for source, target in cfg.get("manual_field_mappings", {}).get(name.upper(), {}).items()
+        if str(source).strip() and str(target).strip()
+    }
+    custom_mapping = pair_mapping or _read_mapping_file(MAPPING_FILE)
     if custom_mapping:
         src_set   = set(src_no_jk)
         tgt_set   = set(tgt_filtered)
         field_map = {s: t for s, t in custom_mapping.items()
                      if s in src_set and t in tgt_set}
         if field_map:
-            log_event(f"{name}: custom mapping — {len(field_map)} pairs", "info")
+            mapping_scope = "pair mapping" if pair_mapping else "custom mapping"
+            log_event(f"{name}: {mapping_scope} — {len(field_map)} pairs", "info")
             from core.field_mapper import MappingResult, MappedField
             mapping_result = MappingResult(
                 mapped_fields=field_map,
                 mapped_details=[MappedField(source_field=s, target_field=t,
-                    method="custom", confidence=1.0,
+                    method="manual" if pair_mapping else "custom", confidence=1.0,
                     source_label=get_label(s, custom), target_label=get_label(t, custom))
                     for s, t in field_map.items()],
                 unmapped_source=[c for c in src_no_jk if c not in field_map],
@@ -815,313 +874,6 @@ def run_validation(name, source_path, target_path):
 
     cache_and_trim_row_details(result_dict)
     return result_dict
-    cfg            = load_config()
-    pass_threshold = float(cfg.get("pass_threshold", 100.0))
-    custom         = _get_custom_labels()
-
-    # ── Determine field filter: template > manual > all ───────────────────────
-    selected_fields    = cfg.get("selected_fields", [])
-    active_template    = cfg.get("active_template", "")
-    template_name_used = ""
-
-    if active_template:
-        tmpl_path = TEMPLATES_DIR / active_template
-        if tmpl_path.exists():
-            tmpl_fields = _read_template_fields(tmpl_path)
-            if tmpl_fields:
-                selected_fields    = tmpl_fields
-                template_name_used = active_template
-                log_event(
-                    f"{name}: using template '{active_template}' "
-                    f"({len(tmpl_fields)} fields)",
-                    "info",
-                )
-            else:
-                log_event(
-                    f"{name}: template '{active_template}' is empty — "
-                    f"validating all fields",
-                    "warn",
-                )
-        else:
-            log_event(
-                f"{name}: template '{active_template}' not found — "
-                f"validating all fields",
-                "warn",
-            )
-
-    obj_cfg  = get_object_config(name)
-    join_key = obj_cfg.get("join_key", None)
-
-    src_mb = Path(source_path).stat().st_size / (1024 * 1024)
-    tgt_mb = Path(target_path).stat().st_size / (1024 * 1024)
-    if src_mb > 50 or tgt_mb > 50:
-        log_event(
-            f"{name}: large files ({src_mb:.1f} MB / {tgt_mb:.1f} MB) — "
-            f"may take a few minutes",
-            "warn",
-        )
-
-    try:
-        src_cols, tgt_cols = _read_file_headers(source_path, target_path)
-    except Exception as e:
-        log_event(f"{name}: could not read headers — {e}", "warn")
-        src_cols, tgt_cols = [], []
-
-    jk_upper  = join_key.upper() if join_key else ""
-    src_no_jk = [c for c in src_cols if c != jk_upper]
-    tgt_no_jk = [c for c in tgt_cols if c != jk_upper]
-
-    # ── Build field mapping: source → target ──────────────────────────────────
-    # Forward approach: for each source column find its target equivalent.
-    # The target file drives WHAT gets validated — we use all target columns
-    # as the reference set. selected_fields/template filters which target
-    # columns we care about.
-
-    if selected_fields:
-        sel_upper = set(s.upper() for s in selected_fields)
-        # Filter to target columns the user selected
-        tgt_filtered = [c for c in tgt_no_jk if c in sel_upper]
-        if not tgt_filtered:
-            tgt_filtered = tgt_no_jk  # fallback: all target columns
-        log_event(
-            f"{name}: filtering to {len(tgt_filtered)} of "
-            f"{len(tgt_no_jk)} target columns",
-            "info",
-        )
-    else:
-        tgt_filtered = tgt_no_jk
-
-    # ── Build field mapping: custom file > alias > fuzzy ─────────────────────
-    # If user has uploaded a custom_mapping.csv, use it directly.
-    # Otherwise use the alias+fuzzy engine.
-    custom_mapping = _read_mapping_file(MAPPING_FILE)
-    if custom_mapping:
-        # Filter to pairs where both columns exist
-        src_set_check = set(src_no_jk)
-        tgt_set_check = set(tgt_filtered)
-        filtered_map  = {}
-        for s, t in custom_mapping.items():
-            if s in src_set_check and t in tgt_set_check:
-                filtered_map[s] = t
-        if filtered_map:
-            log_event(
-                f"{name}: using custom mapping file — "
-                f"{len(filtered_map)} of {len(custom_mapping)} pairs matched",
-                "info",
-            )
-            # Build a minimal MappingResult from the custom map
-            from core.field_mapper import MappingResult, MappedField
-            details = [
-                MappedField(
-                    source_field=s, target_field=t,
-                    method="custom", confidence=1.0,
-                    source_label=get_label(s, custom),
-                    target_label=get_label(t, custom),
-                )
-                for s, t in filtered_map.items()
-            ]
-            mapping_result = MappingResult(
-                mapped_fields=filtered_map,
-                mapped_details=details,
-                unmapped_source=[c for c in src_no_jk if c not in filtered_map],
-                unmapped_target=[c for c in tgt_filtered if c not in filtered_map.values()],
-                suggested_mappings=[],
-                object_type=name,
-                total_source_fields=len(src_no_jk),
-                total_target_fields=len(tgt_filtered),
-            )
-        else:
-            log_event(
-                f"{name}: custom mapping file has no matching pairs for this file — "
-                f"falling back to auto mapping",
-                "warn",
-            )
-            custom_mapping = {}
-
-    if not custom_mapping:
-        mapping_result = build_field_mapping(
-            source_cols=src_no_jk,
-            target_cols=tgt_filtered,
-            object_type=name,
-            selected_fields=None,
-            custom_labels=custom,
-        )
-
-    field_map    = mapping_result.mapped_fields
-    exact_count  = sum(1 for d in mapping_result.mapped_details if d.method == "exact")
-    alias_count  = sum(1 for d in mapping_result.mapped_details if "alias" in d.method)
-    fuzzy_count  = sum(1 for d in mapping_result.mapped_details if d.method == "fuzzy")
-
-    log_event(
-        f"{name}: mapped {len(field_map)} fields "
-        f"({exact_count} exact, {alias_count} alias, {fuzzy_count} fuzzy)"
-        + (f" via template '{template_name_used}'" if template_name_used else ""),
-        "info",
-    )
-
-    # Warn if template produced zero mapped fields
-    if selected_fields and template_name_used and not field_map:
-        log_event(
-            f"{name}: WARNING — template '{template_name_used}' has "
-            f"{len(selected_fields)} fields but NONE matched any source column. "
-            f"Source columns: {src_no_jk[:8]}... "
-            f"Template fields: {selected_fields[:8]}...",
-            "error",
-        )
-    elif selected_fields and template_name_used:
-        # Log which template fields weren't found
-        mapped_set = set(field_map.keys())
-        src_set    = set(src_no_jk)
-        missing    = [f for f in selected_fields
-                      if f not in src_set and f not in mapped_set]
-        if missing:
-            log_event(
-                f"{name}: {len(missing)} template field(s) not matched: "
-                f"{', '.join(missing[:8])}"
-                + (" …" if len(missing) > 8 else ""),
-                "warn",
-            )
-
-    validator = MaterialValidator(
-        field_map=field_map,
-        pass_threshold=pass_threshold,
-        join_key=join_key,
-        custom_labels=custom if custom else None,
-    )
-
-    result          = validator.validate(source_path, target_path)
-    ss              = result.summary_stats
-    business_status = calculate_business_status(result, pass_threshold)
-
-    # ── Build field rows ───────────────────────────────────────────────────────
-    field_rows = []
-    for fr in result.field_results:
-        detail = next(
-            (d for d in mapping_result.mapped_details
-             if d.source_field == fr.field_source), None
-        )
-        disp = get_display(fr.field_source, fr.field_target, custom)
-        field_rows.append({
-            "field":              fr.field_source,
-            "field_label":        disp["source_label"],
-            "field_target":       fr.field_target,
-            "field_target_label": disp["target_label"],
-            "display_name":       disp["display_name"],
-            "display_mapping":    disp["display_mapping"],
-            "is_cross_mapped":    disp["is_cross_mapped"],
-            "mapping_method":     detail.method if detail else "exact",
-            "mapping_confidence": detail.confidence if detail else 1.0,
-            "type":               "numeric" if fr.is_numeric else "string",
-            "tolerance":          fr.tolerance_used,
-            "total":              fr.total_records,
-            "matched":            fr.matched,
-            "mismatched":         fr.mismatched,
-            "miss_source":        fr.missing_in_source,
-            "miss_target":        fr.missing_in_target,
-            "match_pct":          fr.match_pct,
-            "pass_threshold":     fr.pass_threshold,
-            "status":             fr.status,
-            "mismatches":         fr.mismatch_details,
-            "matches":            fr.matched_details,
-            "mismatch_count":     len(fr.mismatch_details),
-        })
-
-    # ── Mapping info for dashboard ─────────────────────────────────────────────
-    mapping_info = None
-    if result.mapping:
-        mapping_info = {
-            "join_key":           result.mapping.join_key,
-            "join_key_label":     get_label(result.mapping.join_key, custom),
-            "matched_fields":     result.mapping.matched_fields,
-            "matched_labels":     {f: get_label(f, custom)
-                                   for f in result.mapping.matched_fields},
-            "source_only_fields": mapping_result.unmapped_source,
-            "source_only_labels": {f: get_label(f, custom)
-                                   for f in mapping_result.unmapped_source},
-            "target_only_fields": mapping_result.unmapped_target,
-            "target_only_labels": {f: get_label(f, custom)
-                                   for f in mapping_result.unmapped_target},
-            "numeric_fields":     result.mapping.numeric_fields,
-            "tolerance_map":      result.mapping.tolerance_map,
-            "selected_fields":    selected_fields,
-            "pass_threshold":     pass_threshold,
-        }
-
-    # ── available_fields for Settings field selector ───────────────────────────
-    sel_set = set(selected_fields) if selected_fields else set()
-    available_fields = []
-    for col in src_cols:
-        tgt_col = field_map.get(col)
-        available_fields.append({
-            "field":        col,
-            "label":        get_label(col, custom),
-            "in_source":    True,
-            "in_target":    tgt_col is not None,
-            "target_col":   tgt_col or "",
-            "target_label": get_label(tgt_col, custom) if tgt_col else "",
-            "common":       tgt_col is not None,
-            "selected":     not sel_set or col in sel_set,
-        })
-    for col in tgt_cols:
-        if col not in field_map.values() and col != jk_upper:
-            available_fields.append({
-                "field":        col,
-                "label":        get_label(col, custom),
-                "in_source":    False,
-                "in_target":    True,
-                "target_col":   col,
-                "target_label": get_label(col, custom),
-                "common":       False,
-                "selected":     False,
-            })
-
-    ts             = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_filename = f"{name}_{ts}.xlsx"
-    excel_path     = REPORTS_DIR / excel_filename
-
-    result_dict = {
-        "name":                   name,
-        "sap_object":             obj_cfg.get("description", name),
-        "status":                 business_status["status"],
-        "validator_status":       result.overall_status,
-        "field_status":           business_status["field_status"],
-        "record_status":          business_status["record_status"],
-        "business_message":       business_status["message"],
-        "source_file":            Path(source_path).name,
-        "target_file":            Path(target_path).name,
-        "total_source_records":   result.total_source_records,
-        "total_target_records":   result.total_target_records,
-        "records_matched":        result.records_matched,
-        "records_only_in_source": result.records_only_in_source,
-        "records_only_in_target": result.records_only_in_target,
-        "fields_passed":          ss["fields_passed"],
-        "fields_failed":          ss["fields_failed"],
-        "total_fields":           ss["total_fields_validated"],
-        "pass_rate_pct":          ss["pass_rate_pct"],
-        "pass_threshold":         pass_threshold,
-        "selected_fields":        selected_fields,
-        "template_used":          template_name_used,
-        "errors":                 result.errors,
-        "mapping":                mapping_info,
-        "field_mapping_detail":   mapping_result_to_dict(mapping_result),
-        "field_results":          field_rows,
-        "available_fields":       available_fields,
-        "run_at":                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "excel_file":             excel_filename,
-        "corrected_files":        find_corrected_files(Path(target_path).name),
-    }
-
-    result_dict["recommendations"] = build_recommendations(result_dict)
-
-    try:
-        generate_excel_report(result_dict, str(excel_path))
-        cleanup_old_reports()
-    except Exception as e:
-        result_dict["excel_error"] = str(e)
-        log_event(f"Excel failed for {name}: {e}", "error")
-
-    cache_and_trim_row_details(result_dict)
-    return result_dict
 
 
 # ── Scan orchestrator ───────────────────────────────────────────────────────────
@@ -1150,7 +902,9 @@ def scan_and_validate_all(target_names=None, force=False):
             name = pair["name"]
 
             if not pair["has_pair"]:
-                if file_states.get(name, {}).get("state") != "unmatched":
+                with store_lock:
+                    is_unmatched = file_states.get(name, {}).get("state") == "unmatched"
+                if not is_unmatched:
                     side  = "source" if pair["source_path"] else "target"
                     other = "target" if side == "source" else "source"
                     log_event(
@@ -1158,17 +912,19 @@ def scan_and_validate_all(target_names=None, force=False):
                         f"waiting for {other} to pair",
                         "warn",
                     )
-                    file_states[name] = {
-                        "state": "unmatched",
-                        "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "source_file": pair["source_file"],
-                        "target_file": pair["target_file"],
-                    }
+                    with store_lock:
+                        file_states[name] = {
+                            "state": "unmatched",
+                            "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "source_file": pair["source_file"],
+                            "target_file": pair["target_file"],
+                        }
                 continue
 
             last_mtime = pair["mtime"]
-            existing   = results_store.get(name)
-            prev_state = file_states.get(name, {})
+            with store_lock:
+                existing   = results_store.get(name)
+                prev_state = file_states.get(name, {})
 
             if not existing:
                 log_event(
@@ -1185,33 +941,35 @@ def scan_and_validate_all(target_names=None, force=False):
                 continue
 
             scan_status["current_file"] = name
-            file_states[name] = {
-                "state": "validating",
-                "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "source_file": pair["source_file"],
-                "target_file": pair["target_file"],
-                "_mtime": last_mtime,
-            }
+            with store_lock:
+                file_states[name] = {
+                    "state": "validating",
+                    "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source_file": pair["source_file"],
+                    "target_file": pair["target_file"],
+                    "_mtime": last_mtime,
+                }
 
             try:
                 result = run_validation(
                     name, pair["source_path"], pair["target_path"]
                 )
                 result["_mtime"] = last_mtime
-                results_store[name] = result
-
-                file_states[name] = {
-                    "state":         "done",
-                    "detected_at":   file_states[name]["detected_at"],
-                    "validated_at":  result["run_at"],
-                    "source_file":   pair["source_file"],
-                    "target_file":   pair["target_file"],
-                    "_mtime":        last_mtime,
-                    "status":        result["status"],
-                    "field_status":  result["field_status"],
-                    "record_status": result["record_status"],
-                    "message":       result["business_message"],
-                }
+                with store_lock:
+                    results_store[name] = result
+                    detected_at = file_states[name]["detected_at"]
+                    file_states[name] = {
+                        "state":         "done",
+                        "detected_at":   detected_at,
+                        "validated_at":  result["run_at"],
+                        "source_file":   pair["source_file"],
+                        "target_file":   pair["target_file"],
+                        "_mtime":        last_mtime,
+                        "status":        result["status"],
+                        "field_status":  result["field_status"],
+                        "record_status": result["record_status"],
+                        "message":       result["business_message"],
+                    }
 
                 level = ("success" if result["status"] == "PASS"
                          else "warn" if result["status"] == "WARNING"
@@ -1224,9 +982,10 @@ def scan_and_validate_all(target_names=None, force=False):
                     level,
                 )
             except Exception as e:
-                file_states[name]["state"] = "error"
-                file_states[name]["error"] = str(e)
-                scan_status["error"]       = str(e)
+                with store_lock:
+                    file_states[name]["state"] = "error"
+                    file_states[name]["error"] = str(e)
+                scan_status["error"] = str(e)
                 log_event(f"{name}: ERROR — {e}", "error")
             finally:
                 scan_status["completed_files"] += 1
@@ -1258,15 +1017,25 @@ def login():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
+        rate_key = f"{email}|{request.remote_addr}"
+        if _login_rate_limited(rate_key):
+            log_event(f"Login rate-limited: {email} from {request.remote_addr}", "warn")
+            return render_template(
+                "login.html",
+                error="Too many failed login attempts. Try again in 15 minutes.",
+            ), 429
         user = database_store.get_user_by_email(email)
         if user and user.get("active") and check_password_hash(user["password_hash"], password):
+            _reset_login_failures(rate_key)
             session.clear()
             session.update(user_id=user["id"], user_email=user["email"],
                            display_name=user["display_name"])
             database_store.mark_user_login(user["id"])
             log_event(f"User signed in: {user['email']}", "info")
             destination = request.args.get("next", "")
-            return redirect(destination if destination.startswith("/") else url_for("home"))
+            safe_redirect = destination.startswith("/") and not destination.startswith("//")
+            return redirect(destination if safe_redirect else url_for("home"))
+        _record_login_failure(rate_key)
         error = "Invalid email or password."
     return render_template("login.html", error=error)
 
@@ -1295,7 +1064,7 @@ def signup():
             if user_id:
                 log_event(f"New user registered: {email}", "info")
                 return redirect(url_for("login", registered="1"))
-            error = "Signup is unavailable. Confirm the MySQL connection."
+            error = "Signup is unavailable. Confirm the database connection."
     return render_template("signup.html", error=error)
 
 
@@ -1315,7 +1084,8 @@ def index():
 @app.route("/home")
 def home():
     backend = database_store.status().get("backend", "database")
-    database_label = "Native MySQL connected" if backend.startswith("mysql") else "Local database ready"
+    backend_names = {"postgresql": "PostgreSQL connected", "mysql": "MySQL connected"}
+    database_label = backend_names.get(backend.split("+", 1)[0], "Database unavailable" if not database_store.enabled else "Database connected")
     return render_template("home.html", database_label=database_label)
 
 
@@ -1323,11 +1093,13 @@ def home():
 def api_home_summary():
     source_files, target_files = get_available_files()
     metrics = database_store.get_workspace_summary()
+    with store_lock:
+        recent_activity = list(reversed(activity_log[-6:]))
     metrics.update({
         "source_files": len(source_files), "target_files": len(target_files),
         "configured_pairs": len(load_config().get("manual_pairs", [])),
         "reports": len(list(REPORTS_DIR.glob("*.xlsx"))),
-        "recent_activity": list(reversed(activity_log[-6:])),
+        "recent_activity": recent_activity,
     })
     return jsonify(metrics)
 
@@ -1370,6 +1142,12 @@ def api_rule_hub_rule_status(rule_id):
     status = str((request.get_json(silent=True) or {}).get("status", "")).upper()
     allowed = {"DRAFT", "PENDING_APPROVAL", "APPROVED", "RETURNED", "ARCHIVED"}
     if status not in allowed: return jsonify({"error": "Invalid rule status."}), 400
+    if status == "APPROVED":
+        actor = session.get("user_email", "")
+        rule = database_store.get_transform_rule(rule_id)
+        creator = str((rule or {}).get("created_by", "")).strip().lower()
+        if actor and creator and creator == actor.strip().lower():
+            return jsonify({"error": "You cannot approve a rule you created yourself."}), 403
     ok = database_store.set_transform_rule_status(rule_id, status, session.get("user_email", ""))
     if not ok: return jsonify({"error": "Rule not found."}), 404
     database_store.log_event(f"Transformation rule {rule_id} changed to {status} by {session.get('user_email')}")
@@ -1407,6 +1185,8 @@ def api_status():
     s, t  = get_dirs()
     sel   = cfg.get("selected_fields", [])
     tmpl  = cfg.get("active_template", "")
+    with store_lock:
+        file_states_snapshot = dict(file_states)
     return jsonify({
         "last_scan":       scan_status["last_scan"],
         "scanning":        scan_status["scanning"],
@@ -1417,7 +1197,7 @@ def api_status():
         "source_dir":      str(s),
         "target_dir":      str(t),
         "pairs":           pairs,
-        "file_states":     file_states,
+        "file_states":     file_states_snapshot,
         "total_tables":    len([p for p in pairs if p["has_pair"]]),
         "unmatched":       len([p for p in pairs if not p["has_pair"]]),
         "pass_threshold":  cfg.get("pass_threshold", 100.0),
@@ -1433,7 +1213,8 @@ def api_status():
 
 @app.route("/api/results")
 def api_results():
-    return jsonify(list(results_store.values()))
+    with store_lock:
+        return jsonify(list(results_store.values()))
 
 
 @app.route("/api/results/<name>")
@@ -1449,7 +1230,12 @@ def api_database_status():
 
 @app.route("/database")
 def database_explorer_page():
-    return render_template("database_explorer.html")
+    status = database_store.status()
+    backend = status.get("backend", "").split("+", 1)[0]
+    backend_label = {"postgresql": "PostgreSQL", "mysql": "MySQL"}.get(
+        backend, "Database"
+    )
+    return render_template("database_explorer.html", backend_label=backend_label)
 
 
 @app.route("/api/database/tables")
@@ -1577,7 +1363,8 @@ def field_errors_page(name, field):
 
 @app.route("/api/activity")
 def api_activity():
-    return jsonify(list(reversed(activity_log)))
+    with store_lock:
+        return jsonify(list(reversed(activity_log)))
 
 
 # ── Upload ──────────────────────────────────────────────────────────────────────
@@ -1662,12 +1449,15 @@ def upload_labels():
     f = request.files["file"]
     if not f.filename:
         return jsonify({"error": "No filename"}), 400
+    if Path(f.filename).suffix.lower() != ".csv":
+        return jsonify({"error": "Use a CSV file"}), 400
     f.save(str(LABELS_FILE))
     log_event(f"Custom labels uploaded: {secure_filename(f.filename)}", "info")
-    results_store.clear()
-    for n in file_states:
-        if file_states[n].get("state") == "done":
-            file_states[n]["state"] = "changed"
+    with store_lock:
+        results_store.clear()
+        for n in file_states:
+            if file_states[n].get("state") == "done":
+                file_states[n]["state"] = "changed"
     threading.Thread(target=scan_and_validate_all, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -1699,10 +1489,11 @@ def upload_mapping():
         + (" …" if len(pairs) > 5 else ""),
         "info",
     )
-    results_store.clear()
-    for n in file_states:
-        if file_states[n].get("state") == "done":
-            file_states[n]["state"] = "changed"
+    with store_lock:
+        results_store.clear()
+        for n in file_states:
+            if file_states[n].get("state") == "done":
+                file_states[n]["state"] = "changed"
     threading.Thread(target=scan_and_validate_all, daemon=True).start()
     return jsonify({"ok": True, "pairs": len(pairs), "mapping": pairs})
 
@@ -1713,10 +1504,11 @@ def clear_mapping():
     if MAPPING_FILE.exists():
         MAPPING_FILE.unlink()
         log_event("Custom mapping cleared — using auto alias/fuzzy mapping", "info")
-        results_store.clear()
-        for n in file_states:
-            if file_states[n].get("state") == "done":
-                file_states[n]["state"] = "changed"
+        with store_lock:
+            results_store.clear()
+            for n in file_states:
+                if file_states[n].get("state") == "done":
+                    file_states[n]["state"] = "changed"
         threading.Thread(target=scan_and_validate_all, daemon=True).start()
     return jsonify({"ok": True})
 
@@ -1815,10 +1607,11 @@ def api_template_activate():
         cfg    = load_config()
         cfg["active_template"] = safe
         save_config(cfg)
-        results_store.clear()
-        for n in file_states:
-            if file_states[n].get("state") == "done":
-                file_states[n]["state"] = "changed"
+        with store_lock:
+            results_store.clear()
+            for n in file_states:
+                if file_states[n].get("state") == "done":
+                    file_states[n]["state"] = "changed"
         threading.Thread(target=scan_and_validate_all, daemon=True).start()
         log_event(
             f"Template activated: {safe} — validating "
@@ -1835,10 +1628,11 @@ def api_template_activate():
     cfg = load_config()
     cfg["active_template"] = ""
     save_config(cfg)
-    results_store.clear()
-    for n in file_states:
-        if file_states[n].get("state") == "done":
-            file_states[n]["state"] = "changed"
+    with store_lock:
+        results_store.clear()
+        for n in file_states:
+            if file_states[n].get("state") == "done":
+                file_states[n]["state"] = "changed"
     threading.Thread(target=scan_and_validate_all, daemon=True).start()
     log_event("Template deactivated — validating all fields", "info")
     return jsonify({"ok": True, "active_template": ""})
@@ -2086,8 +1880,9 @@ def api_get_config():
         log_event(f"Config: could not read file headers from disk — {e}", "warn")
 
     # Fallback to last scan result if disk read produced nothing
-    if not available and results_store:
-        first     = next(iter(results_store.values()))
+    with store_lock:
+        first = next(iter(results_store.values()), None) if results_store else None
+    if not available and first:
         available = first.get("available_fields", [
             {"field": fr["field"], "label": get_label(fr["field"], custom),
              "in_source": True, "in_target": True, "common": True,
@@ -2150,10 +1945,11 @@ def api_set_config():
 
     if changed:
         save_config(cfg)
-        results_store.clear()
-        for n in file_states:
-            if file_states[n].get("state") == "done":
-                file_states[n]["state"] = "changed"
+        with store_lock:
+            results_store.clear()
+            for n in file_states:
+                if file_states[n].get("state") == "done":
+                    file_states[n]["state"] = "changed"
         threading.Thread(target=scan_and_validate_all, daemon=True).start()
 
     return jsonify({"ok": True, "config": cfg})
@@ -2173,7 +1969,8 @@ def api_fields_from_files():
     src_name = data.get("source_file", "").strip()
     tgt_name = data.get("target_file", "").strip()
     custom   = _get_custom_labels()
-    sel      = load_config().get("selected_fields", [])
+    cfg      = load_config()
+    sel      = cfg.get("selected_fields", [])
     sel_set  = set(sel)
 
     src_dir, tgt_dir = get_dirs()
@@ -2201,32 +1998,49 @@ def api_fields_from_files():
 
     src_set  = set(src_cols)
     tgt_set  = set(tgt_cols)
+    pair_name = str(data.get("pair_name", "")).strip().upper()
+    saved_mapping = cfg.get("manual_field_mappings", {}).get(pair_name, {}) if pair_name else {}
+    automatic = build_field_mapping(
+        source_cols=src_cols, target_cols=tgt_cols,
+        object_type=pair_name, selected_fields=None, custom_labels=custom,
+    )
+    effective_mapping = {
+        str(source).upper(): str(target).upper()
+        for source, target in (saved_mapping or automatic.mapped_fields).items()
+        if str(source).upper() in src_set and str(target).upper() in tgt_set
+    }
 
     fields = []
-    # TARGET columns are the master list — show all target fields first
-    for col in sorted(tgt_set):
-        fields.append({
-            "field":     col,
-            "label":     get_label(col, custom),
-            "in_source": col in src_set,
-            "in_target": True,
-            "common":    col in src_set,
-            "selected":  not sel_set or col in sel_set,
-        })
-    # Source-only columns (in source but not in target)
-    for col in sorted(src_set - tgt_set):
+    # Source fields are the validation list. A mapped target makes the field selectable
+    # even when the technical column names differ completely.
+    for col in src_cols:
+        target_col = effective_mapping.get(col)
         fields.append({
             "field":     col,
             "label":     get_label(col, custom),
             "in_source": True,
-            "in_target": False,
+            "in_target": target_col is not None,
+            "target_col": target_col or "",
+            "target_label": get_label(target_col, custom) if target_col else "",
+            "common":    target_col is not None,
+            "selected":  not sel_set or col in sel_set,
+        })
+    used_targets = set(effective_mapping.values())
+    for col in tgt_cols:
+        if col in used_targets:
+            continue
+        fields.append({
+            "field":     col,
+            "label":     get_label(col, custom),
+            "in_source": False,
+            "in_target": True,
             "common":    False,
             "selected":  False,
         })
 
-    common   = len(src_set & tgt_set)
-    src_only = len(src_set - tgt_set)
-    tgt_only = len(tgt_set - src_set)
+    common   = len(effective_mapping)
+    src_only = len(src_set - set(effective_mapping))
+    tgt_only = len(tgt_set - used_targets)
 
     log_event(
         f"Fields from files: "
@@ -2246,7 +2060,53 @@ def api_fields_from_files():
         "errors":      errors,
         "source_file": src_name,
         "target_file": tgt_name,
+        "pair_name": pair_name,
+        "source_columns": src_cols,
+        "target_columns": tgt_cols,
+        "field_mapping": effective_mapping,
+        "mapping_is_manual": bool(saved_mapping),
     })
+
+
+@app.route("/api/field-mappings/<name>", methods=["POST"])
+def api_field_mappings_save(name):
+    """Save a one-to-one source-to-target column mapping for one file pair."""
+    pname = name.strip().upper()
+    pair = next((item for item in discover_pairs()
+                 if item["name"] == pname and item["has_pair"]), None)
+    if not pair:
+        return jsonify({"error": f"Pair '{pname}' was not found."}), 404
+    try:
+        src_cols, tgt_cols = _read_file_headers(pair["source_path"], pair["target_path"])
+    except Exception as exc:
+        return jsonify({"error": f"Could not read file headers: {exc}"}), 400
+
+    requested = (request.get_json(silent=True) or {}).get("mapping", {})
+    src_set, tgt_set = set(src_cols), set(tgt_cols)
+    clean, used_targets = {}, set()
+    for source, target in requested.items():
+        source = str(source).strip().upper()
+        target = str(target).strip().upper()
+        if not source or not target:
+            continue
+        if source not in src_set or target not in tgt_set:
+            return jsonify({"error": f"Invalid mapping: {source} → {target}."}), 400
+        if target in used_targets:
+            return jsonify({"error": f"Target column '{target}' is mapped more than once."}), 400
+        clean[source] = target
+        used_targets.add(target)
+    if not clean:
+        return jsonify({"error": "Select at least one source-to-target mapping."}), 400
+
+    cfg = load_config()
+    cfg.setdefault("manual_field_mappings", {})[pname] = clean
+    save_config(cfg)
+    with store_lock:
+        if pname in file_states:
+            file_states[pname]["state"] = "changed"
+    log_event(f"{pname}: saved {len(clean)} manual field mappings", "info")
+    threading.Thread(target=scan_and_validate_all, args=({pname}, True), daemon=True).start()
+    return jsonify({"ok": True, "pair_name": pname, "mapped": len(clean), "mapping": clean})
 
 
 @app.route("/api/fields/preview", methods=["POST"])
@@ -2265,11 +2125,13 @@ def api_fields_preview():
         try:
             if p.suffix.lower() in (".xlsx", ".xls"):
                 import openpyxl
-                wb   = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
-                ws   = wb.active
-                cols = [str(c.value).strip().upper()
-                        for c in next(ws.iter_rows(max_row=1)) if c.value]
-                wb.close()
+                wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+                try:
+                    ws   = wb.active
+                    cols = [str(c.value).strip().upper()
+                            for c in next(ws.iter_rows(max_row=1)) if c.value]
+                finally:
+                    wb.close()
             else:
                 import csv
                 with open(str(p), encoding="utf-8-sig") as f:
@@ -2442,13 +2304,14 @@ def api_pairs_save():
     removed_names = set(previous) - set(updated)
     cfg["manual_pairs"] = clean
     save_config(cfg)
-    for name in removed_names:
-        results_store.pop(name, None)
-        row_details_store.pop(name, None)
-        file_states.pop(name, None)
-    for name in changed_names:
-        if name in file_states:
-            file_states[name]["state"] = "changed"
+    with store_lock:
+        for name in removed_names:
+            results_store.pop(name, None)
+            row_details_store.pop(name, None)
+            file_states.pop(name, None)
+        for name in changed_names:
+            if name in file_states:
+                file_states[name]["state"] = "changed"
     log_event(
         f"Manual pairs updated: {len(clean)} total; "
         f"validating {len(changed_names)} new/changed pair(s)", "info")
@@ -2470,8 +2333,9 @@ def api_pairs_delete(name):
     save_config(cfg)
     removed = before - len(pairs)
     if removed:
-        results_store.pop(name.upper(), None)
-        file_states.pop(name.upper(), None)
+        with store_lock:
+            results_store.pop(name.upper(), None)
+            file_states.pop(name.upper(), None)
         log_event(f"Manual pair removed: {name}", "info")
     return jsonify({"ok": True, "removed": removed})
 
@@ -2504,11 +2368,13 @@ def api_join_keys_columns(name):
         p = str(path)
         if p.lower().endswith((".xlsx", ".xls")):
             import openpyxl
-            wb   = openpyxl.load_workbook(p, read_only=True, data_only=True)
-            ws   = wb.active
-            cols = [str(c.value).strip().upper()
-                    for c in next(ws.iter_rows(max_row=1)) if c.value]
-            wb.close()
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            try:
+                ws   = wb.active
+                cols = [str(c.value).strip().upper()
+                        for c in next(ws.iter_rows(max_row=1)) if c.value]
+            finally:
+                wb.close()
             return cols
         with open(p, encoding="utf-8-sig") as f:
             return [c.strip().upper() for c in next(_csv.reader(f))]
@@ -2575,8 +2441,9 @@ def api_join_keys_set(name):
         log_event(f"Join keys cleared for {pname} — auto-detect will suggest", "info")
 
     save_config(cfg)
-    if pname in file_states:
-        file_states[pname]["state"] = "changed"
+    with store_lock:
+        if pname in file_states:
+            file_states[pname]["state"] = "changed"
     threading.Thread(target=scan_and_validate_all,
                      args=({pname}, True), daemon=True).start()
     return jsonify({"ok": True, "name": pname, "keys": keys})
@@ -2589,8 +2456,9 @@ def api_join_keys_clear(name):
     pname = name.upper()
     cfg.get("manual_join_keys", {}).pop(pname, None)
     save_config(cfg)
-    if pname in file_states:
-        file_states[pname]["state"] = "changed"
+    with store_lock:
+        if pname in file_states:
+            file_states[pname]["state"] = "changed"
     log_event(f"Join keys cleared for {pname}", "info")
     threading.Thread(target=scan_and_validate_all,
                      args=({pname}, True), daemon=True).start()
@@ -2619,11 +2487,13 @@ def api_join_keys_suggest(name):
             p = str(path)
             if p.lower().endswith((".xlsx", ".xls")):
                 import openpyxl
-                wb   = openpyxl.load_workbook(p, read_only=True, data_only=True)
-                ws   = wb.active
-                cols = [str(c.value).strip().upper()
-                        for c in next(ws.iter_rows(max_row=1)) if c.value]
-                wb.close()
+                wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+                try:
+                    ws   = wb.active
+                    cols = [str(c.value).strip().upper()
+                            for c in next(ws.iter_rows(max_row=1)) if c.value]
+                finally:
+                    wb.close()
                 return cols
             with open(p, encoding="utf-8-sig") as f:
                 return [c.strip().upper() for c in next(_csv.reader(f))]
@@ -2687,6 +2557,15 @@ def api_join_keys_suggest(name):
 
 # Store parsed LTMC sheets in memory (keyed by upload session)
 _ltmc_store: dict = {}   # {filename: {sheet_name: DataFrame}}
+_LTMC_STORE_MAX = 20     # cap memory use — evict oldest entries once exceeded
+
+
+def _ltmc_store_put(filename, sheets):
+    """Cache parsed LTMC sheets, evicting the oldest entry once the cap is exceeded (FIFO)."""
+    _ltmc_store[filename] = sheets
+    while len(_ltmc_store) > _LTMC_STORE_MAX:
+        oldest = next(iter(_ltmc_store))
+        _ltmc_store.pop(oldest, None)
 
 
 @app.route("/api/ltmc/upload", methods=["POST"])
@@ -2718,7 +2597,7 @@ def api_ltmc_upload():
         summary = get_sheet_summary(sheets)
 
         # Store parsed sheets
-        _ltmc_store[save_name] = sheets
+        _ltmc_store_put(save_name, sheets)
 
         log_event(
             f"LTMC XML parsed: {save_name} — "
@@ -2752,7 +2631,7 @@ def api_ltmc_sheets(filename):
             return jsonify({"error": f"File not found: {safe}"}), 404
         try:
             from core.ltmc_parser import parse_ltmc_xml
-            _ltmc_store[safe] = parse_ltmc_xml(str(xml_path))
+            _ltmc_store_put(safe, parse_ltmc_xml(str(xml_path)))
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -2803,7 +2682,7 @@ def api_ltmc_resolve():
             return jsonify({"error": f"LTMC file not found: {safe_ltmc}"}), 404
         try:
             from core.ltmc_parser import parse_ltmc_xml
-            _ltmc_store[safe_ltmc] = parse_ltmc_xml(str(xml_path))
+            _ltmc_store_put(safe_ltmc, parse_ltmc_xml(str(xml_path)))
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -2828,10 +2707,12 @@ def api_ltmc_resolve():
     try:
         if str(post_path).lower().endswith((".xlsx", ".xls")):
             import openpyxl
-            wb      = openpyxl.load_workbook(str(post_path), read_only=True, data_only=True)
-            ws_post = wb.active
-            post_cols = [str(c.value).strip() for c in next(ws_post.iter_rows(max_row=1)) if c.value]
-            wb.close()
+            wb = openpyxl.load_workbook(str(post_path), read_only=True, data_only=True)
+            try:
+                ws_post = wb.active
+                post_cols = [str(c.value).strip() for c in next(ws_post.iter_rows(max_row=1)) if c.value]
+            finally:
+                wb.close()
         else:
             import csv as csv_mod
             with open(str(post_path), encoding="utf-8-sig") as fh:
@@ -2925,7 +2806,7 @@ def api_ltmc_validate():
             return jsonify({"error": f"LTMC file not found: {safe_ltmc}"}), 404
         try:
             from core.ltmc_parser import parse_ltmc_xml
-            _ltmc_store[safe_ltmc] = parse_ltmc_xml(str(xml_path))
+            _ltmc_store_put(safe_ltmc, parse_ltmc_xml(str(xml_path)))
         except Exception as e:
             return jsonify({"error": f"XML parse error: {e}"}), 500
 
@@ -3391,9 +3272,10 @@ def api_folders():
 
 @app.route("/api/clear-results", methods=["POST"])
 def api_clear_results():
-    results_store.clear()
-    file_states.clear()
-    activity_log.clear()
+    with store_lock:
+        results_store.clear()
+        file_states.clear()
+        activity_log.clear()
     scan_status.update({
         "last_scan": None, "scanning": False, "error": None,
         "current_file": None, "total_files": 0, "completed_files": 0,
@@ -3416,8 +3298,9 @@ if __name__ == "__main__":
     print(f"  Reports        → {REPORTS_DIR}")
     print(f"  Pass threshold → {cfg.get('pass_threshold', 100)}%")
     db_status = database_store.status()
-    backend_label = "MySQL connected" if db_status.get("backend", "").startswith("mysql") else "local SQLite"
-    print(f"  Database       → {backend_label if db_status['enabled'] else 'unavailable'}")
+    backend_names = {"postgresql": "PostgreSQL", "mysql": "MySQL"}
+    backend_label = backend_names.get(db_status.get("backend", "").split("+", 1)[0], "database")
+    print(f"  Database       → {backend_label if db_status['enabled'] else 'unavailable (' + (db_status.get('error') or 'not configured') + ')'}")
     if cfg.get("active_template"):
         print(f"  Active template→ {cfg['active_template']}")
     port = int(os.environ.get("SAP_VALIDATOR_PORT", "5050"))

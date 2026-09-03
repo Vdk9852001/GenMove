@@ -29,6 +29,10 @@ import xml.etree.ElementTree as ET
 
 SS_NS = "urn:schemas-microsoft-com:office:spreadsheet"
 
+# Cheap safeguard against XML entity-expansion (billion-laughs style) abuse:
+# reject implausibly large files before handing them to ElementTree.
+_MAX_XML_BYTES = 200 * 1024 * 1024  # 200 MB
+
 def _tag(local: str) -> str:
     return f"{{{SS_NS}}}{local}"
 
@@ -121,6 +125,11 @@ def parse_ltmc_xml(file_path: str) -> Dict[str, pd.DataFrame]:
         raise FileNotFoundError(f"Not found: {file_path}")
 
     content = path.read_bytes().lstrip(b"\xef\xbb\xbf")
+    if len(content) > _MAX_XML_BYTES:
+        raise ValueError(
+            f"LTMC XML file too large ({len(content):,} bytes > "
+            f"{_MAX_XML_BYTES:,} byte limit) — refusing to parse."
+        )
     try:
         root = ET.fromstring(content)
     except ET.ParseError as e:

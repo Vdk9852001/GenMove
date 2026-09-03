@@ -1,6 +1,22 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · GenMove 1.0</title>
-<link rel="stylesheet" href="/static/css/login.css?v=20260825h"><link rel="stylesheet" href="/static/css/theme.css?v=20260825h"></head>
-<body><main class="card"><div class="brand"><div class="mark">G</div><div><h1>GenMove 1.0</h1><p>Governed SAP migration validation</p></div></div>
+<link rel="stylesheet" href="/static/css/auth.css?v=20260903a"><link rel="stylesheet" href="/static/css/theme.css?v=20260825h"></head>
+<body class="auth-page"><div class="auth-shell">
+<aside class="auth-side">
+<div class="auth-brand"><div class="mark">G</div><div class="auth-brand-text"><span class="auth-brand-name">GenMove</span><span class="auth-version">v1.0</span></div></div>
+<h1 class="auth-tagline">Governed SAP migration validation</h1>
+<ul class="auth-checklist">
+<li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity=".45"/><path d="M5 8.2l2 2 4-4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Field-level reconciliation, source vs target</span></li>
+<li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity=".45"/><path d="M5 8.2l2 2 4-4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Approval-gated transformation rules</span></li>
+<li><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity=".45"/><path d="M5 8.2l2 2 4-4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Full audit log</span></li>
+</ul>
+</aside>
+<main class="auth-main">
+<div class="auth-card">
+<h2 class="auth-heading">Sign in</h2>
+<p class="auth-subtext">Enter your credentials to access the dashboard.</p>
 {% if request.args.get('registered') %}<div class="success">Account created. You can now sign in.</div>{% endif %}{% if error %}<div class="error">{{ error }}</div>{% endif %}
 <form method="post"><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required autofocus></div><div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div><button type="submit">Sign in</button></form>
-<p class="foot">New to GenMove? <a href="/signup">Create an account</a></p></main></body></html>
+</div>
+<p class="foot">New to GenMove? <a href="/signup">Create an account</a></p>
+</main>
+</div></body></html>

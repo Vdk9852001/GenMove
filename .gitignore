@@ -1,1 +1,11 @@
 .DS_Store
+config/session_secret.txt
+*.env
+.env
+venv/
+__pycache__/
+*.pyc
+node_modules/
+genmove_local.db
+reports/*.xlsx
+.claude/

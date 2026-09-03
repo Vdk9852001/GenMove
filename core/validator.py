@@ -168,7 +168,7 @@ class MaterialValidator:
         target_path:       str,
         source_delimiter:  str = ",",
         target_delimiter:  str = ",",
-        max_mismatch_rows: Optional[int] = None,
+        max_mismatch_rows: Optional[int] = 5000,
         object_name:       str = "",
     ) -> ValidationResult:
 
@@ -186,12 +186,17 @@ class MaterialValidator:
             )
 
         common_cols = sorted(set(src_hdrs) & set(tgt_hdrs))
+        normalized_field_map = {
+            str(source).upper(): str(target).upper()
+            for source, target in (self.field_map or {}).items()
+        }
 
         # ── Step 2: Resolve join keys ─────────────────────────────────────────
         # Priority 1: user manually selected keys from UI
         if self.manual_join_keys:
             valid_keys = [k for k in self.manual_join_keys
-                         if k in set(src_hdrs) and k in set(tgt_hdrs)]
+                         if k in set(src_hdrs)
+                         and normalized_field_map.get(k, k) in set(tgt_hdrs)]
             if valid_keys:
                 join_keys         = valid_keys
                 detection_method  = "manual"
@@ -200,7 +205,8 @@ class MaterialValidator:
             else:
                 # Keys specified but not found in files
                 missing = [k for k in self.manual_join_keys
-                          if k not in set(src_hdrs) or k not in set(tgt_hdrs)]
+                          if k not in set(src_hdrs)
+                          or normalized_field_map.get(k, k) not in set(tgt_hdrs)]
                 return ValidationResult(
                     source_file=source_path, target_file=target_path,
                     total_source_records=0, total_target_records=0,
@@ -217,10 +223,16 @@ class MaterialValidator:
         else:
             try:
                 # Load a small sample just for key detection (fast)
+                detection_sources = list(normalized_field_map) if normalized_field_map else common_cols
+                detection_targets = ([normalized_field_map[s] for s in detection_sources]
+                                     if normalized_field_map else common_cols)
                 src_sample = self._load_file_cols(source_path, source_delimiter,
-                                                   common_cols, nrows=2000)
+                                                   detection_sources, nrows=2000)
                 tgt_sample = self._load_file_cols(target_path, target_delimiter,
-                                                   common_cols, nrows=2000)
+                                                   detection_targets, nrows=2000)
+                if normalized_field_map:
+                    tgt_sample = tgt_sample.rename(columns={target: source
+                        for source, target in normalized_field_map.items()})
                 from core.key_detector import detect_composite_key
                 kd = detect_composite_key(
                     src_df=src_sample,
@@ -257,10 +269,11 @@ class MaterialValidator:
                 )
 
         # ── Step 3: Load only needed columns ──────────────────────────────────
+        target_join_keys = [normalized_field_map.get(k, k) for k in join_keys]
         if self.field_map:
-            field_map  = {s.upper(): t.upper() for s, t in self.field_map.items()}
+            field_map  = normalized_field_map
             needed_src = set(field_map.keys()) | set(join_keys)
-            needed_tgt = set(field_map.values()) | set(join_keys)
+            needed_tgt = set(field_map.values()) | set(target_join_keys)
         else:
             field_map  = {c: c for c in common_cols}
             needed_src = set(src_hdrs)
@@ -291,17 +304,17 @@ class MaterialValidator:
             )
 
         # ── Step 4: Normalise join key values ─────────────────────────────────
-        for k in join_keys:
+        for k, target_key in zip(join_keys, target_join_keys):
             if k in src_df.columns:
                 src_df[k] = src_df[k].astype(str).str.strip().str.upper()
-            if k in tgt_df.columns:
-                tgt_df[k] = tgt_df[k].astype(str).str.strip().str.upper()
+            if target_key in tgt_df.columns:
+                tgt_df[target_key] = tgt_df[target_key].astype(str).str.strip().str.upper()
 
         # ── Step 5: Build composite key column ────────────────────────────────
         # e.g. MATNR=1234, KSCHL=PB00, EKORG=CNG1 → "1234||PB00||CNG1"
         SEP = "||"
         src_df[_CK] = src_df[join_keys].astype(str).agg(SEP.join, axis=1)
-        tgt_df[_CK] = tgt_df[join_keys].astype(str).agg(SEP.join, axis=1)
+        tgt_df[_CK] = tgt_df[target_join_keys].astype(str).agg(SEP.join, axis=1)
 
         # ── Step 6: Key set counts ─────────────────────────────────────────────
         src_keys = set(src_df[_CK].unique())
@@ -320,10 +333,10 @@ class MaterialValidator:
         # Join key fields ARE validated (value comparison across matched records)
         # but displayed with a special "KEY" badge in the dashboard.
         jk_set         = set(join_keys)
-        key_field_map  = {k: k for k in join_keys
-                          if k in src_df.columns and k in tgt_df.columns}
+        key_field_map  = {k: target for k, target in zip(join_keys, target_join_keys)
+                          if k in src_df.columns and target in tgt_df.columns}
         data_field_map = {s: t for s, t in field_map.items()
-                          if s not in jk_set and t not in jk_set
+                          if s not in jk_set and t not in set(target_join_keys)
                           and s in src_df.columns and t in tgt_df.columns}
 
         # ── Step 8: Numeric detection (data fields only) ──────────────────────

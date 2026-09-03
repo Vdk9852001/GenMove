@@ -14,6 +14,7 @@ Design principles:
 """
 
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 import pandas as pd
@@ -230,6 +231,20 @@ def _uniqueness(df: pd.DataFrame, cols: List[str]) -> tuple:
     return round(n_unique / n_total, 4), dupes
 
 
+def _token_match(needle: str, haystack: str) -> bool:
+    """
+    True if `needle` occurs inside `haystack` as a whole token — bounded by
+    non-alphanumeric characters (typically "_") or the string ends — rather
+    than as a bare substring.
+
+    Prevents false positives like catalogue key "BANK" matching inside
+    "DATABANK_EXPORT" (letters run together, no real token boundary) while
+    still matching "DATA_BANK_EXPORT" (BANK is its own underscore-delimited
+    token).
+    """
+    return re.search(rf"(?<![A-Z0-9]){re.escape(needle)}(?![A-Z0-9])", haystack) is not None
+
+
 def _catalogue_candidates(object_name: str, common_cols: List[str]) -> List[str]:
     """
     Return catalogue key columns that exist in common_cols, for the best matching object.
@@ -250,7 +265,7 @@ def _catalogue_candidates(object_name: str, common_cols: List[str]) -> List[str]
     # Step 1: direct or partial name match — collect all matching entries
     matched_entries = []
     for key, cols in SAP_KEY_CATALOGUE.items():
-        if key == name or key in name or name in key:
+        if key == name or _token_match(key, name) or _token_match(name, key):
             overlap = [c for c in cols if c in common_set]
             if overlap:
                 matched_entries.append((len(overlap), key, overlap, cols))

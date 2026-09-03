@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -28,24 +29,32 @@ from typing import Dict, List, Optional
 _CACHE_FILE = Path(__file__).parent.parent / "ai_column_cache.json"
 _cache: dict = {}
 _cache_dirty = False
+# Guards all reads/writes of _cache and _cache_dirty — this module is called
+# from a multi-threaded Flask app, and the cache is a plain module-level dict
+# backed by a single JSON file, so concurrent requests can otherwise corrupt
+# it (interleaved dict mutation, or one thread's write clobbering another's).
+_cache_lock = threading.Lock()
 
 
 def _load_cache():
     global _cache
     if _CACHE_FILE.exists():
         try:
-            _cache = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+            loaded = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            _cache = {}
+            loaded = {}
+        with _cache_lock:
+            _cache = loaded
 
 
 def _save_cache():
     global _cache_dirty
-    if _cache_dirty:
-        _CACHE_FILE.write_text(
-            json.dumps(_cache, indent=2), encoding="utf-8"
-        )
-        _cache_dirty = False
+    with _cache_lock:
+        if _cache_dirty:
+            _CACHE_FILE.write_text(
+                json.dumps(_cache, indent=2), encoding="utf-8"
+            )
+            _cache_dirty = False
 
 
 def _cache_key(
@@ -106,12 +115,13 @@ def ai_resolve_columns(
     cached_results  = {}
     need_api        = []
 
-    for col in unresolved:
-        key = _cache_key(sap_object, sheet_name, col, ltmc_columns)
-        if key in _cache:
-            cached_results[col] = _cache[key]
-        else:
-            need_api.append(col)
+    with _cache_lock:
+        for col in unresolved:
+            key = _cache_key(sap_object, sheet_name, col, ltmc_columns)
+            if key in _cache:
+                cached_results[col] = _cache[key]
+            else:
+                need_api.append(col)
 
     if not need_api:
         return cached_results
@@ -127,10 +137,11 @@ def ai_resolve_columns(
 
     # Cache the results
     global _cache_dirty
-    for col, result in api_results.items():
-        key = _cache_key(sap_object, sheet_name, col, ltmc_columns)
-        _cache[key] = result
-        _cache_dirty = True
+    with _cache_lock:
+        for col, result in api_results.items():
+            key = _cache_key(sap_object, sheet_name, col, ltmc_columns)
+            _cache[key] = result
+            _cache_dirty = True
 
     _save_cache()
 
@@ -150,7 +161,30 @@ def _call_claude(
     Call Claude claude-sonnet-4-20250514 to resolve column names.
     Returns {postload_col: {resolved, method, matched, ltmc_col, confidence}}
     """
+    import os
     import urllib.request
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        # Fail loudly and distinguishably rather than silently sending an
+        # unauthenticated request that the API would just 401 on.
+        return {
+            col: {
+                "original":   col,
+                "resolved":   col.upper(),
+                "method":     "ai_not_configured",
+                "matched":    False,
+                "ltmc_col":   None,
+                "confidence": "low",
+                "error":      True,
+                "error_type": "ConfigurationError",
+                "reasoning":  (
+                    "ANTHROPIC_API_KEY environment variable is not set — "
+                    "AI column matching is not configured."
+                ),
+            }
+            for col in unresolved_cols
+        }
 
     # Build context: include labels for LTMC columns if available
     ltmc_with_labels = []
@@ -207,6 +241,7 @@ Respond with ONLY a valid JSON object in this exact format, nothing else:
         headers={
             "Content-Type":      "application/json",
             "anthropic-version": "2023-06-01",
+            "x-api-key":         api_key,
         },
         method="POST",
     )
@@ -215,16 +250,21 @@ Respond with ONLY a valid JSON object in this exact format, nothing else:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        # API error — return original columns as unmatched
+        # API error — return original columns as unmatched, but keep this
+        # distinguishable from a legitimate "AI found no match": callers can
+        # check result["error"] to tell the two apart instead of both
+        # collapsing into an indistinguishable "matched": False.
         return {
             col: {
-                "original": col,
-                "resolved": col.upper(),
-                "method": "ai_error",
-                "matched": False,
-                "ltmc_col": None,
+                "original":   col,
+                "resolved":   col.upper(),
+                "method":     "ai_error",
+                "matched":    False,
+                "ltmc_col":   None,
                 "confidence": "low",
-                "reasoning": str(e),
+                "error":      True,
+                "error_type": type(e).__name__,
+                "reasoning":  f"AI matching failed: {type(e).__name__}: {e}",
             }
             for col in unresolved_cols
         }
@@ -264,6 +304,7 @@ Respond with ONLY a valid JSON object in this exact format, nothing else:
                     "matched":    matched,
                     "ltmc_col":   ltmc_col,
                     "confidence": conf,
+                    "error":      False,
                     "reasoning":  reasoning,
                 }
     except Exception as e:
@@ -279,6 +320,7 @@ Respond with ONLY a valid JSON object in this exact format, nothing else:
                 "matched":    False,
                 "ltmc_col":   None,
                 "confidence": "low",
+                "error":      False,
                 "reasoning":  "Not resolved by AI",
             }
 
@@ -289,8 +331,10 @@ Respond with ONLY a valid JSON object in this exact format, nothing else:
 
 def get_cache_stats() -> dict:
     _load_cache()
+    with _cache_lock:
+        total_entries = len(_cache)
     return {
-        "total_entries": len(_cache),
+        "total_entries": total_entries,
         "cache_file": str(_CACHE_FILE),
         "exists": _CACHE_FILE.exists(),
     }
@@ -299,20 +343,23 @@ def get_cache_stats() -> dict:
 def clear_cache(sap_object: str = None, sheet_name: str = None):
     global _cache, _cache_dirty
     _load_cache()
-    if sap_object is None:
-        _cache = {}
-    else:
-        prefix = f"{sap_object}|{sheet_name or ''}".rstrip("|")
-        _cache = {k: v for k, v in _cache.items() if not k.startswith(prefix)}
-    _cache_dirty = True
+    with _cache_lock:
+        if sap_object is None:
+            _cache = {}
+        else:
+            prefix = f"{sap_object}|{sheet_name or ''}".rstrip("|")
+            _cache = {k: v for k, v in _cache.items() if not k.startswith(prefix)}
+        _cache_dirty = True
     _save_cache()
 
 
 def get_cached_mappings(sap_object: str = None) -> list:
     """Return human-readable cache entries, optionally filtered by object."""
     _load_cache()
+    with _cache_lock:
+        cache_snapshot = dict(_cache)
     entries = []
-    for key, val in _cache.items():
+    for key, val in cache_snapshot.items():
         parts = key.split("|")
         if len(parts) >= 3:
             obj, sheet, col = parts[0], parts[1], parts[2]

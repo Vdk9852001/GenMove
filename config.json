@@ -6,25 +6,11 @@
   "manual_pairs": [
     {
       "name": "NEW_TEST",
-      "source_file": "mat.xlsx",
-      "target_file": "mat_target.xlsx"
-    },
-    {
-      "name": "UNIT_TEST_VALIDATION",
-      "source_file": "mat_unit_source.xlsx",
-      "target_file": "mat_unit_target.xlsx"
-    },
-    {
-      "name": "UNIT_TEST_AFTER_TRANSFORMATION",
-      "source_file": "mat_unit_source_transformed_20260825_155131.xlsx",
-      "target_file": "mat_unit_target.xlsx"
-    },
-    {
-      "name": "MATERIALS",
       "source_file": "SAP_Source_7500_Rows.xlsx",
       "target_file": "SAP_Target_7000_Errors.xlsx"
     }
   ],
+  "manual_field_mappings": {},
   "active_template": "",
   "transformation_rulebook": "GenMove_transformation_rulebook_example.xlsx",
   "source_rule_assignments": {
